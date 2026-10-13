@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/ohsu-comp-bio/funnel/compute/kubernetes/storageplan"
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/events"
 	"github.com/ohsu-comp-bio/funnel/storage"
@@ -31,6 +32,7 @@ type DefaultWorker struct {
 
 // Configuration of the task executor.
 type Executor struct {
+	StoragePlan *storageplan.Plan
 	// "docker" or "kubernetes"
 	Backend string
 	// Kubernetes executor template
@@ -88,6 +90,10 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 			}))
 		runerr = run.syserr
 		return
+	}
+
+	if plan := r.Executor.StoragePlan; plan != nil && plan.TaskID != task.Id {
+		return fmt.Errorf("storage plan belongs to task %q, not %q", plan.TaskID, task.Id)
 	}
 
 	// set up task specific utilities
@@ -234,6 +240,7 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 				}
 
 				taskCommand = &KubernetesCommand{
+					StoragePlan:    r.Executor.StoragePlan,
 					TaskId:         task.Id,
 					JobId:          i,
 					StdinFile:      d.Stdin,

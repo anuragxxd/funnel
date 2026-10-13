@@ -12,6 +12,7 @@ import (
 	"time"
 
 	k8sbackend "github.com/ohsu-comp-bio/funnel/compute/kubernetes"
+	"github.com/ohsu-comp-bio/funnel/compute/kubernetes/storageplan"
 	"github.com/ohsu-comp-bio/funnel/logger"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	v1 "k8s.io/api/batch/v1"
@@ -27,6 +28,7 @@ import (
 
 // KubernetesCommand is responsible for configuring and running a task in a Kubernetes cluster.
 type KubernetesCommand struct {
+	StoragePlan    *storageplan.Plan
 	TaskId         string
 	JobId          int
 	StdinFile      string
@@ -165,7 +167,7 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 		"RamGbLimit":         kcmd.ResourceLimits.RamGb,
 		"DiskGbLimit":        kcmd.ResourceLimits.DiskGb,
 		"Image":              kcmd.Image,
-		"NeedsPVC":           kcmd.NeedsPVC,
+		"NeedsPVC":           kcmd.StoragePlan == nil && kcmd.NeedsPVC,
 		"NodeSelector":       kcmd.NodeSelector,
 		"Tolerations":        kcmd.Tolerations,
 		"ServiceAccountName": kcmd.ServiceAccount,
@@ -199,6 +201,16 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 			Reason:  "JobCreationFailed",
 			Message: "Decoded object is not a Job",
 			Err:     fmt.Errorf("decoded object is not a Job"),
+		}
+	}
+
+	if kcmd.StoragePlan != nil {
+		mounts := make([]corev1.VolumeMount, 0, len(kcmd.Volumes))
+		for _, volume := range kcmd.Volumes {
+			mounts = append(mounts, corev1.VolumeMount{MountPath: volume.ContainerPath, ReadOnly: volume.Readonly})
+		}
+		if err := kcmd.StoragePlan.ApplyExecutor(job, taskId, mounts); err != nil {
+			return &K8sSystemErr{Reason: "StorageBindingFailed", Message: "Failed to bind executor storage", Err: err}
 		}
 	}
 

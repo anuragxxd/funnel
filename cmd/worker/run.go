@@ -67,13 +67,6 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 		return nil, fmt.Errorf("creating task reader: %v", err)
 	}
 
-	// Initialize task storage client.
-	store, err := storage.NewMux(conf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to instantiate Storage backend: %v", err)
-	}
-	store.AttachLogger(log)
-
 	// The executor always defaults to docker, unless explicitly set to kubernetes.
 	var executor = worker.Executor{
 		Backend: "docker",
@@ -95,12 +88,27 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 			}
 			conf = googleproto.Clone(conf).(*config.Config)
 			conf.Worker.WorkDir = plan.WorkDir
+			conf.MountedInputs = plan.MountedInputs
 			executor.StoragePlan = plan
 			executor.JobsNamespace = plan.Namespace
 		} else if conf.Kubernetes.Storage != nil {
 			return nil, fmt.Errorf("explicit Kubernetes storage requires a submitted storage plan")
 		}
 
+	}
+
+	// Resolve the submitted configuration before constructing worker-only storage.
+	mux, err := storage.NewMux(conf)
+	if err != nil {
+		return nil, fmt.Errorf("creating storage backend: %w", err)
+	}
+	mux.AttachLogger(log)
+	var store storage.Storage = mux
+	if len(conf.MountedInputs) > 0 {
+		store, err = storage.WithMountedInputs(mux, conf.MountedInputs)
+		if err != nil {
+			return nil, fmt.Errorf("configuring mounted inputs: %w", err)
+		}
 	}
 
 	return &worker.DefaultWorker{

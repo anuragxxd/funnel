@@ -79,6 +79,8 @@ Kubernetes:
 
 Only the workspace reaches executor Pods through generated mounts. Extra worker mounts do not expose data automatically at TES input paths. A storage backend must still prepare those inputs.
 
+`MountedInputs` maps S3 input URL prefixes to these worker mount paths. Matching reads copy files into the workspace; outputs still use the storage API. See [Mounted inputs](../../storage/mounted-inputs/).
+
 ## Job template contract
 
 With explicit storage, Funnel renders Job templates with `NeedsPVC: false` and adds the resolved volumes and mounts afterward. Templates that already condition legacy storage on `NeedsPVC` keep their other settings. A template that hardcodes conflicting volumes or mount paths must remove them before enabling bindings.
@@ -86,6 +88,8 @@ With explicit storage, Funnel renders Job templates with `NeedsPVC: false` and a
 Funnel selects the sole regular container by default. For templates with sidecars, set `Storage.WorkerContainer` and `Storage.ExecutorContainer` to the respective main container names. Funnel mounts storage and injects worker configuration only into those containers. Init containers and sidecars retain their template-defined mounts.
 
 The worker Job name must equal `TaskId`. `Worker.WorkDir` must be absolute. Per-task plugin overrides cannot change `JobsNamespace`, because a backend reconciles one configured Jobs namespace.
+
+`Kubernetes.WorkerImage` selects the image supplied to the worker Job template and skips server Pod discovery. When it is absent, Funnel keeps the existing image discovery behavior. Templates use `{{.Image}}` to consume that setting.
 
 The server records a versioned plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. The worker uses the submitted claim names, namespace, and work directory even with a static ConfigMap. Do not set that environment variable or annotation in templates.
 
@@ -101,7 +105,15 @@ Finalized Jobs let cleanup recover task-selected PV names after server configura
 
 Provisioning checks the worker Job before and after each resource creation. If cancellation removes the Job during creation, Funnel deletes the late-created owned PV. A process crash, an ambiguous create response, or a failed compensating deletion can leave an orphan. Recovery then requires orphan cleanup with PV scanning enabled by a PV template. An existing-claim-only configuration does not scan cluster-scoped PVs.
 
-The protobuf addition uses Kubernetes field 25 and leaves field 20 unchanged. Rebuild Go RPC plugins with the updated config package before passing explicit bindings through them; that package registers the new source variants for gob transport. Each binding must select exactly one of `ExistingClaim` or `Templates`. Duplicate binding names are errors, including duplicates produced by configuration merges.
+Rebuild Go RPC plugins with the updated config package before passing explicit bindings through them; that package registers the new source variants for gob transport. Each binding must select exactly one of `ExistingClaim` or `Templates`. Duplicate binding names are errors, including duplicates produced by configuration merges.
+
+### Migrate contributor configuration
+
+The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20, uses `WorkerImage` at 24 and `Storage` at 25, and adds `Config.MountedInputs` at 34. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
+
+For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `ExistingClaim`. Keep `WorkerImage` as an independent field.
+
+Chicago's `S3FilesFilesystemId` used field 20, which conflicts with upstream `ForbiddenPathPrefixes`. Do not decode old Chicago binary configuration with the upstream schema. Both fields use a length-delimited wire representation, so the decoder cannot distinguish them. Export that configuration using its original schema, move the filesystem ID into the deployment's native CSI PV template, and load the migrated named configuration. Rebuild plugins against the canonical schema before exchanging configuration. Funnel supplies no automatic decoder for the conflicting binary format.
 
 ## Verify against a local cluster
 

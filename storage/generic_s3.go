@@ -131,6 +131,9 @@ func (s3 *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 	var objects []*Object
 	recursive := true
 	for info := range s3.client.ListObjects(ctx, u.bucket, minio.ListObjectsOptions{Prefix: u.path, Recursive: recursive}) {
+		if info.Err != nil {
+			return nil, fmt.Errorf("genericS3: listing %s: %w", url, info.Err)
+		}
 		// check if key represents a directory
 		if strings.HasSuffix(info.Key, "/") {
 			continue
@@ -234,36 +237,44 @@ func download(ctx context.Context, client *minio.Client, bucket, objectPath, fil
 		return fmt.Errorf("failed writing file: %w", err)
 	}
 
-	// Close explicitly (not via defer) so Mountpoint begins flushing to S3
-	// before we poll for readability below.
 	if err := outFile.Close(); err != nil {
 		return fmt.Errorf("failed closing file: %w", err)
 	}
 
-	// Wait for the file to become readable. When the path is on a
-	// Mountpoint-for-S3 backed filesystem, closing the write handle triggers
-	// an async S3 upload; os.Stat returns EPERM until that upload finishes.
-	const mountpointFlushTimeout = 5 * time.Minute
-	const mountpointFlushInterval = 2 * time.Second
-	deadline := time.Now().Add(mountpointFlushTimeout)
-	for {
-		_, err := os.Stat(filePath)
-		if err == nil {
-			break
-		}
-		if time.Now().Before(deadline) && (errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrNotExist)) {
-			logger.Debug("genericS3: waiting for input file to be readable after write", "path", filePath, "error", err)
-			time.Sleep(mountpointFlushInterval)
-			continue
-		}
-		return fmt.Errorf("failed waiting for file to become readable: %w", err)
+	if _, err := waitForLocalFile(ctx, filePath); err != nil {
+		return fmt.Errorf("failed waiting for input file to become readable: %w", err)
 	}
-
 	return nil
 }
 
-// Put copies an object (file) from the host path to S3.
-// Update Put function to be able to upload directories (a la Get() function)
+// waitForLocalFile tolerates temporary visibility errors on mounted workspaces.
+// Local readability does not establish remote publication; Put requires an S3 upload response.
+func waitForLocalFile(ctx context.Context, path string) (os.FileInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(path)
+		if err == nil {
+			return info, nil
+		}
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// Put uploads a local file and returns the acknowledged write's metadata.
+// Directory uploads return an aggregate receipt after every file is acknowledged.
 func (s3 *GenericS3) Put(ctx context.Context, url, path string) (*Object, error) {
 	u, err := s3.parse(url)
 	if err != nil {
@@ -280,63 +291,44 @@ func (s3 *GenericS3) Put(ctx context.Context, url, path string) (*Object, error)
 		opts.ServerSideEncryption = SSEKMS
 	}
 
-	// Wait for the local path to become readable. When the local path is on a
-	// Mountpoint-for-S3 backed filesystem and the file was written by another
-	// mount instance (the executor pod), os.Stat returns EPERM until Mountpoint
-	// finishes flushing the write to S3. Poll until the file is readable or the
-	// timeout expires.
-	const mountpointFlushTimeout = 5 * time.Minute
-	const mountpointFlushInterval = 2 * time.Second
-	deadline := time.Now().Add(mountpointFlushTimeout)
-	var fileInfo os.FileInfo
-	for {
-		var err error
-		fileInfo, err = os.Stat(path)
-		if err == nil {
-			break
-		}
-		if time.Now().Before(deadline) && (errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrNotExist)) {
-			logger.Debug("genericS3: waiting for output file to become readable", "path", path, "error", err)
-			time.Sleep(mountpointFlushInterval)
-			continue
-		}
-		return nil, fmt.Errorf("genericS3: putting object %s: %v", url, err)
+	fileInfo, err := waitForLocalFile(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("genericS3: waiting for output file %s: %w", path, err)
 	}
 
-	// Check if the path is a directory
 	if fileInfo.IsDir() {
-		// Walk the directory and upload all files and subdirectories
+		obj := &Object{URL: url, Name: u.path}
 		err = filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !info.IsDir() {
-				// Upload the file
 				relativePath, err := filepath.Rel(path, filePath)
 				if err != nil {
 					return err
 				}
 				uploadPath := filepath.Join(u.path, relativePath)
-				_, err = s3.client.FPutObject(ctx, u.bucket, uploadPath, filePath, opts)
+				info, err := s3.client.FPutObject(ctx, u.bucket, uploadPath, filePath, opts)
 				if err != nil {
-					return fmt.Errorf("genericS3: putting nested object %s: %v", url, err)
+					return fmt.Errorf("genericS3: putting nested object %s: %w", uploadPath, err)
 				}
+				obj.Size += info.Size
 			}
 			return nil
 		})
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		_, err = s3.client.FPutObject(ctx, u.bucket, u.path, path, opts)
-		if err != nil {
-			return nil, fmt.Errorf("genericS3: putting object %s: %v", url, err)
-		}
+		return obj, nil
 	}
-
-	obj, err := s3.Stat(ctx, url)
-
-	return obj, err
+	info, err := s3.client.FPutObject(ctx, u.bucket, u.path, path, opts)
+	if err != nil {
+		return nil, fmt.Errorf("genericS3: putting object %s: %w", url, err)
+	}
+	return &Object{URL: url, Name: info.Key, ETag: info.ETag, Size: info.Size, LastModified: info.LastModified}, nil
 }
 
 // Join joins the given URL with the given subpath.

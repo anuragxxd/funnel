@@ -45,16 +45,17 @@ func CreateJob(ctx context.Context, task *tes.Task, conf *config.Config, client 
 		return nil, fmt.Errorf("%v", err)
 	}
 
-	pods, err := client.CoreV1().Pods(conf.Kubernetes.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=funnel",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %v", err)
-	}
-
-	var image string
-	if len(pods.Items) > 0 && len(pods.Items[0].Spec.Containers) > 0 {
-		image = pods.Items[0].Spec.Containers[0].Image
+	image := conf.Kubernetes.WorkerImage
+	if image == "" {
+		pods, err := client.CoreV1().Pods(conf.Kubernetes.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: "app=funnel",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list pods: %v", err)
+		}
+		if len(pods.Items) > 0 && len(pods.Items[0].Spec.Containers) > 0 {
+			image = pods.Items[0].Spec.Containers[0].Image
+		}
 	}
 
 	res := task.GetResources()

@@ -36,6 +36,7 @@ type Plan struct {
 	WorkspaceVolume   string
 	WorkerContainer   string
 	ExecutorContainer string
+	MountedInputs     []*config.MountedInput
 	Volumes           []corev1.Volume
 	WorkerMounts      []corev1.VolumeMount
 	OwnedClaims       []string
@@ -68,6 +69,7 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		WorkspaceVolume:   storage.WorkspaceVolume,
 		WorkerContainer:   storage.WorkerContainer,
 		ExecutorContainer: storage.ExecutorContainer,
+		MountedInputs:     conf.MountedInputs,
 	}
 	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
 	if len(conf.GenericS3) > 0 && conf.GenericS3[0] != nil {

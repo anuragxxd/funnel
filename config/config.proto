@@ -53,6 +53,15 @@ message Config {
   FTPStorage FTPStorage = 31;
   // Plugins
   Plugins Plugins = 32;
+  // MountedInputs opts workers into mapping S3 URL prefixes to local mount roots.
+  repeated MountedInput MountedInputs = 34;
+}
+
+// MountedInput maps an opt-in S3 URL prefix to a worker-local mount root.
+message MountedInput {
+  string URLPrefix = 1;
+  // Path is the local directory where objects under URLPrefix are mounted.
+  string Path = 2;
 }
 
 // This config matches the funnel plugins repo protobuf
@@ -334,6 +343,9 @@ message FTPStorage {
 
 // Kubernetes describes the configuration for the Kubernetes compute backend.
 message Kubernetes {
+  reserved 21 to 23;
+  reserved "PVCMode", "StorageClassName", "SharedPVCName", "S3FilesFilesystemId";
+
   string Executor = 1;
   string WorkerTemplate = 2;
   string ExecutorTemplate = 3;
@@ -349,6 +361,8 @@ message Kubernetes {
   bool DisableReconciler = 13;
   google.protobuf.Duration ReconcileRate = 14;
   bool DisableJobCleanup = 15;
+  // WorkerImage bypasses server pod image discovery when set.
+  string WorkerImage = 24;
 
   // NodeSelector + Tolerations for scheduling jobs onto specific nodes
   // https://kubernetes.io/docs/tasks/configure-pod-container/assign-pods-nodes/#create-a-pod-that-gets-scheduled-to-your-chosen-node

@@ -226,14 +226,6 @@
         "Plugins": {
           "$ref": "#/definitions/configPlugins",
           "title": "Plugins"
-        },
-        "MountedInputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/configMountedInput"
-          },
-          "description": "MountedInputs opts workers into mapping S3 URL prefixes to local mount roots."
         }
       },
       "description": "Config describes configuration for Funnel."
@@ -573,6 +565,18 @@
       },
       "description": "Kubernetes describes the configuration for the Kubernetes compute backend."
     },
+    "configKubernetesMountedInput": {
+      "type": "object",
+      "properties": {
+        "URLPrefix": {
+          "type": "string"
+        },
+        "WorkerMount": {
+          "type": "string"
+        }
+      },
+      "description": "KubernetesMountedInput maps an S3 prefix to an explicitly named worker mount."
+    },
     "configKubernetesResources": {
       "type": "object",
       "properties": {
@@ -605,6 +609,14 @@
         "ExecutorContainer": {
           "type": "string",
           "description": "ExecutorContainer selects the executor container receiving generated\nmounts. It may be empty when the pod has one regular\ncontainer; set it when the pod has multiple regular containers."
+        },
+        "MountedInputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/configKubernetesMountedInput"
+          },
+          "description": "MountedInputs maps S3 prefixes to named worker mount views."
         }
       },
       "description": "KubernetesStorage describes named volume bindings shared by the worker and\nits executor pods. Each binding selects either an existing claim or native\nYAML templates for a per-task PVC and optional PV."
@@ -624,12 +636,13 @@
         "WorkerMounts": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "object",
+            "$ref": "#/definitions/configKubernetesWorkerMount"
           },
-          "description": "WorkerMounts contains native Kubernetes volumeMount YAML snippets. The\nplanner sets each mount's volume name to the binding's Name."
+          "description": "WorkerMounts contains named native Kubernetes volumeMount YAML snippets.\nThe planner sets each mount's volume name to the binding's Name."
         }
       },
-      "description": "KubernetesStorageBinding names a volume source and the mount snippets to add\nto worker pods. Executor pods derive their mounts from the task's volumes."
+      "description": "KubernetesStorageBinding names a volume source and the native mounts to add\nto worker pods. Executor pods derive their mounts from the task's volumes."
     },
     "configKubernetesStorageTemplates": {
       "type": "object",
@@ -642,6 +655,18 @@
         }
       },
       "description": "KubernetesStorageTemplates contains native Kubernetes YAML resource bodies."
+    },
+    "configKubernetesWorkerMount": {
+      "type": "object",
+      "properties": {
+        "Name": {
+          "type": "string"
+        },
+        "Mount": {
+          "type": "string"
+        }
+      },
+      "description": "KubernetesWorkerMount gives a native worker mount a stable logical name."
     },
     "configLocalStorage": {
       "type": "object",
@@ -681,19 +706,6 @@
         }
       },
       "description": "MongoDB configures access to a MongoDB database."
-    },
-    "configMountedInput": {
-      "type": "object",
-      "properties": {
-        "URLPrefix": {
-          "type": "string"
-        },
-        "Path": {
-          "type": "string",
-          "description": "Path is the local directory where objects under URLPrefix are mounted."
-        }
-      },
-      "description": "MountedInput maps an opt-in S3 URL prefix to a worker-local mount root."
     },
     "configNode": {
       "type": "object",

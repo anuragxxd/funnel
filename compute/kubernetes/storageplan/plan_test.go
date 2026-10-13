@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +19,10 @@ func existingConfig() *config.Config {
 	c.Worker.WorkDir = "/work"
 	c.Kubernetes.Storage = &config.KubernetesStorage{WorkspaceVolume: "workspace", Bindings: []*config.KubernetesStorageBinding{{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"}}}}
 	return c
+}
+
+func namedMount(name, raw string) *config.KubernetesWorkerMount {
+	return &config.KubernetesWorkerMount{Name: name, Mount: raw}
 }
 
 const pvcTemplate = `apiVersion: v1
@@ -51,7 +56,7 @@ spec:
 
 func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{Name: "cache", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-cache"}, WorkerMounts: []string{"mountPath: /cache\nreadOnly: true\nsubPath: cache"}})
+	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{Name: "cache", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-cache"}, WorkerMounts: []*config.KubernetesWorkerMount{namedMount("cache-view", "mountPath: /cache\nreadOnly: true\nsubPath: cache")}})
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +101,7 @@ func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 
 func TestWorkspaceAllowsReadOnlyRootView(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []string{"mountPath: /bucket\nreadOnly: true"}
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("bucket-view", "mountPath: /bucket\nreadOnly: true")}
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +116,164 @@ func TestWorkspaceAllowsReadOnlyRootView(t *testing.T) {
 	}
 }
 
+func TestMountedInputRouteTracksNativeMountPathAndSnapshot(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
+		namedMount("reference-view", "mountPath: /reference\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"),
+	}
+	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/reference/", WorkerMount: "reference-view"}}
+	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.InputRoutes) != 1 || p.InputRoutes[0] != (storage.InputRoute{URLPrefix: "s3://bucket/reference/", Root: "/reference"}) {
+		t.Fatalf("input route did not use the native mount path: %+v", p.InputRoutes)
+	}
+	if len(p.WorkerMounts) != 1 || p.WorkerMounts[0].MountPath != "/reference" || p.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" || !p.WorkerMounts[0].ReadOnly {
+		t.Fatalf("native mount fields changed: %+v", p.WorkerMounts)
+	}
+
+	worker := testJob()
+	if err := p.ApplyWorker(worker, "/work", "task-123"); err != nil {
+		t.Fatal(err)
+	}
+	if mount := worker.Spec.Template.Spec.Containers[0].VolumeMounts[1]; mount.MountPath != "/reference" || mount.SubPathExpr != "reference-$(POD_NAME)" {
+		t.Fatalf("rendered worker mount changed: %+v", mount)
+	}
+
+	snapshot, err := p.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /changed"
+	c.Kubernetes.Storage.MountedInputs[0].URLPrefix = "s3://bucket/changed/"
+	restored, err := Decode(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.InputRoutes[0] != (storage.InputRoute{URLPrefix: "s3://bucket/reference/", Root: "/reference"}) || restored.WorkerMounts[0].MountPath != "/reference" || restored.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" {
+		t.Fatalf("snapshot changed after config mutation: routes=%+v mounts=%+v", restored.InputRoutes, restored.WorkerMounts)
+	}
+
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /renamed\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"
+	renamed, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.InputRoutes[0].Root != "/renamed" || renamed.WorkerMounts[0].MountPath != "/renamed" {
+		t.Fatalf("renamed mount path did not update route and worker mount: routes=%+v mounts=%+v", renamed.InputRoutes, renamed.WorkerMounts)
+	}
+}
+
+func TestMountedInputReferencesResolveByNameRegardlessOfOrder(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
+		namedMount("protein-view", "mountPath: /views/protein"),
+		namedMount("reads-view", "mountPath: /views/reads"),
+	}
+	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{
+		{URLPrefix: "s3://bucket/reads/", WorkerMount: "reads-view"},
+		{URLPrefix: "s3://bucket/protein/", WorkerMount: "protein-view"},
+	}
+	first, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.InputRoutes[0].URLPrefix != "s3://bucket/reads/" || first.InputRoutes[0].Root != "/views/reads" || first.InputRoutes[1].URLPrefix != "s3://bucket/protein/" || first.InputRoutes[1].Root != "/views/protein" {
+		t.Fatalf("named input views resolved incorrectly: %+v", first.InputRoutes)
+	}
+
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0], c.Kubernetes.Storage.Bindings[0].WorkerMounts[1] = c.Kubernetes.Storage.Bindings[0].WorkerMounts[1], c.Kubernetes.Storage.Bindings[0].WorkerMounts[0]
+	second, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(first.InputRoutes, second.InputRoutes) {
+		t.Fatalf("mount list order changed name-based routes: first=%+v second=%+v", first.InputRoutes, second.InputRoutes)
+	}
+}
+
+func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*config.Config)
+		want   string
+	}{
+		{
+			name: "unknown reference before template parsing",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: "invalid"}}
+				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "missing-view"}}
+			},
+			want: "unknown worker mount",
+		},
+		{
+			name: "duplicate name",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /one"), namedMount("same-view", "mountPath: /two")}
+			},
+			want: "duplicate worker mount name",
+		},
+		{
+			name: "duplicate across bindings",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /one")}
+				c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{Name: "cache", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-cache"}, WorkerMounts: []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /two")}})
+			},
+			want: "duplicate worker mount name",
+		},
+		{
+			name: "invalid name",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("bad/name", "mountPath: /one")}
+			},
+			want: "invalid worker mount name",
+		},
+		{
+			name: "invalid reference name",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "bad/name"}}
+			},
+			want: "invalid worker mount reference",
+		},
+		{
+			name: "nil named mount",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{nil}
+			},
+			want: "nil worker mount",
+		},
+		{
+			name: "nil input reference",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{nil}
+			},
+			want: "nil entry",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := existingConfig()
+			tt.change(c)
+			_, err := Resolve(&tes.Task{Id: "task-123"}, c)
+			if err == nil || (tt.want != "" && !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+	c := existingConfig()
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input")}
+	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "input-view"}}
+	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.InputRoutes[0].Root = "/unmounted"
+	if err := p.validate(); err == nil || !strings.Contains(err.Error(), "does not match an explicit worker mount") {
+		t.Fatalf("uncovered input route root accepted: %v", err)
+	}
+}
+
 func TestNamedContainersReceiveStorageMounts(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.WorkerContainer = "funnel-worker"
@@ -120,7 +283,7 @@ func TestNamedContainersReceiveStorageMounts(t *testing.T) {
 		Source: &config.KubernetesStorageBinding_ExistingClaim{
 			ExistingClaim: "shared-cache",
 		},
-		WorkerMounts: []string{"mountPath: /cache\nreadOnly: true\nsubPath: cache"},
+		WorkerMounts: []*config.KubernetesWorkerMount{namedMount("cache-view", "mountPath: /cache\nreadOnly: true\nsubPath: cache")},
 	})
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
@@ -259,10 +422,10 @@ func TestInvalidBindings(t *testing.T) {
 		}},
 		{"relative workdir", func(c *config.Config) { c.Worker.WorkDir = "relative" }},
 		{"mount traversal", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []string{"mountPath: /data/../etc"}
+			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("data-view", "mountPath: /data/../etc")}
 		}},
 		{"foreign mount", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []string{"name: foreign\nmountPath: /data"}
+			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("data-view", "name: foreign\nmountPath: /data")}
 		}},
 		{"single pod workspace", func(c *config.Config) {
 			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "ReadWriteMany", "ReadWriteOncePod", 1)}}
@@ -294,7 +457,7 @@ func TestInvalidBindings(t *testing.T) {
 			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: pvTemplate + "  volumeMode: Block\n"}}
 		}},
 		{"workspace overlay", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []string{"mountPath: /work"}
+			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("workspace-view", "mountPath: /work")}
 		}},
 		{"unknown native field", func(c *config.Config) {
 			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate + "  typo: value\n"}}
@@ -376,10 +539,17 @@ func TestInvalidSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":1`, `"Version":2`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
+	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":2`, `"Version":1`, 1), strings.Replace(snapshot, `"Version":2`, `"Version":3`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
 		if _, err := Decode(invalid); err == nil {
 			t.Fatalf("invalid snapshot accepted: %s", invalid)
 		}
+	}
+	if _, err := Decode(strings.Replace(snapshot, `"Version":2`, `"Version":1`, 1)); err == nil || !strings.Contains(err.Error(), "version 2 is required") {
+		t.Fatalf("old storage plan snapshot was not rejected clearly: %v", err)
+	}
+	oldSnapshot := `{"Version":1,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","MountedInputs":[{"URLPrefix":"s3://bucket/ref","Path":"/mnt/reference"}],"Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
+	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 1; version 2 is required") {
+		t.Fatalf("actual v1 fields hid the actionable version error: %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"text/template"
 
 	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -21,9 +22,10 @@ import (
 )
 
 const (
-	Annotation = "funnel.calypr.org/storage-plan"
-	Env        = "FUNNEL_KUBERNETES_STORAGE_PLAN"
-	Finalizer  = "funnel.calypr.org/storage-cleanup"
+	planVersion = 2
+	Annotation  = "funnel.calypr.org/storage-plan"
+	Env         = "FUNNEL_KUBERNETES_STORAGE_PLAN"
+	Finalizer   = "funnel.calypr.org/storage-cleanup"
 )
 
 // Plan records the resolved mounts and the exact names of task-owned resources.
@@ -36,7 +38,7 @@ type Plan struct {
 	WorkspaceVolume   string
 	WorkerContainer   string
 	ExecutorContainer string
-	MountedInputs     []*config.MountedInput
+	InputRoutes       []storage.InputRoute
 	Volumes           []corev1.Volume
 	WorkerMounts      []corev1.VolumeMount
 	OwnedClaims       []string
@@ -60,28 +62,27 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	if errs := validation.IsDNS1123Label(ns); len(errs) != 0 {
 		return nil, fmt.Errorf("invalid storage namespace %q: %s", ns, strings.Join(errs, ", "))
 	}
-	storage := conf.Kubernetes.Storage
+	storageConfig := conf.Kubernetes.Storage
+	workerMounts, inputRoutes, err := resolveWorkerMounts(storageConfig)
+	if err != nil {
+		return nil, err
+	}
 	p := &Plan{
-		Version:           1,
+		Version:           planVersion,
 		TaskID:            task.Id,
 		Namespace:         ns,
 		WorkDir:           conf.GetWorker().GetWorkDir(),
-		WorkspaceVolume:   storage.WorkspaceVolume,
-		WorkerContainer:   storage.WorkerContainer,
-		ExecutorContainer: storage.ExecutorContainer,
-		MountedInputs:     conf.MountedInputs,
+		WorkspaceVolume:   storageConfig.WorkspaceVolume,
+		WorkerContainer:   storageConfig.WorkerContainer,
+		ExecutorContainer: storageConfig.ExecutorContainer,
+		InputRoutes:       inputRoutes,
+		WorkerMounts:      workerMounts,
 	}
 	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
 	if len(conf.GenericS3) > 0 && conf.GenericS3[0] != nil {
 		data["Bucket"], data["Region"], data["KmsKeyID"] = conf.GenericS3[0].Bucket, conf.GenericS3[0].Region, conf.GenericS3[0].KmsKeyID
 	}
-	for _, binding := range storage.Bindings {
-		if binding == nil {
-			return nil, fmt.Errorf("nil storage binding")
-		}
-		if errs := validation.IsDNS1123Label(binding.Name); len(errs) != 0 {
-			return nil, fmt.Errorf("invalid storage binding name %q", binding.Name)
-		}
+	for _, binding := range storageConfig.Bindings {
 		claimName := binding.GetExistingClaim()
 		if templates := binding.GetTemplates(); templates != nil {
 			if templates.PVC == "" {
@@ -176,24 +177,72 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 			return nil, fmt.Errorf("binding %q requires a valid claim name", binding.Name)
 		}
 		p.Volumes = append(p.Volumes, corev1.Volume{Name: binding.Name, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: claimName}}})
-		for _, raw := range binding.WorkerMounts {
-			var mount corev1.VolumeMount
-			if err := decodeNative([]byte(raw), &mount); err != nil {
-				return nil, fmt.Errorf("binding %q worker mount: %w", binding.Name, err)
-			}
-			if mount.Name == "" {
-				mount.Name = binding.Name
-			}
-			if mount.Name != binding.Name {
-				return nil, fmt.Errorf("binding %q worker mount names a different volume", binding.Name)
-			}
-			p.WorkerMounts = append(p.WorkerMounts, mount)
-		}
 	}
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.VolumeMount, []storage.InputRoute, error) {
+	workerMounts := make([]corev1.VolumeMount, 0)
+	mountsByName := make(map[string]corev1.VolumeMount)
+	bindingNames := make(map[string]bool)
+	for _, binding := range storageConfig.Bindings {
+		if binding == nil {
+			return nil, nil, fmt.Errorf("nil storage binding")
+		}
+		if len(validation.IsDNS1123Label(binding.Name)) != 0 {
+			return nil, nil, fmt.Errorf("invalid storage binding name %q", binding.Name)
+		}
+		if bindingNames[binding.Name] {
+			return nil, nil, fmt.Errorf("duplicate storage binding %q", binding.Name)
+		}
+		bindingNames[binding.Name] = true
+		for _, namedMount := range binding.WorkerMounts {
+			if namedMount == nil {
+				return nil, nil, fmt.Errorf("binding %q has a nil worker mount", binding.Name)
+			}
+			if len(validation.IsDNS1123Label(namedMount.Name)) != 0 {
+				return nil, nil, fmt.Errorf("binding %q has invalid worker mount name %q", binding.Name, namedMount.Name)
+			}
+			if _, exists := mountsByName[namedMount.Name]; exists {
+				return nil, nil, fmt.Errorf("duplicate worker mount name %q", namedMount.Name)
+			}
+			var mount corev1.VolumeMount
+			if err := decodeNative([]byte(namedMount.Mount), &mount); err != nil {
+				return nil, nil, fmt.Errorf("binding %q worker mount %q: %w", binding.Name, namedMount.Name, err)
+			}
+			if mount.Name != "" && mount.Name != binding.Name {
+				return nil, nil, fmt.Errorf("binding %q worker mount names a different volume", binding.Name)
+			}
+			mount.Name = binding.Name
+			if err := validateMount(mount); err != nil {
+				return nil, nil, fmt.Errorf("binding %q worker mount %q: %w", binding.Name, namedMount.Name, err)
+			}
+			mountsByName[namedMount.Name] = mount
+			workerMounts = append(workerMounts, mount)
+		}
+	}
+
+	inputRoutes := make([]storage.InputRoute, 0, len(storageConfig.MountedInputs))
+	for _, input := range storageConfig.MountedInputs {
+		if input == nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.MountedInputs contains a nil entry")
+		}
+		if len(validation.IsDNS1123Label(input.WorkerMount)) != 0 {
+			return nil, nil, fmt.Errorf("mounted input %q has invalid worker mount reference %q", input.URLPrefix, input.WorkerMount)
+		}
+		mount, exists := mountsByName[input.WorkerMount]
+		if !exists {
+			return nil, nil, fmt.Errorf("mounted input %q references unknown worker mount %q", input.URLPrefix, input.WorkerMount)
+		}
+		inputRoutes = append(inputRoutes, storage.InputRoute{URLPrefix: input.URLPrefix, Root: mount.MountPath})
+	}
+	if err := storage.ValidateInputRoutes(inputRoutes); err != nil {
+		return nil, nil, fmt.Errorf("Kubernetes.Storage.MountedInputs: %w", err)
+	}
+	return workerMounts, inputRoutes, nil
 }
 
 func render(raw string, data map[string]interface{}, target interface{}) error {
@@ -249,15 +298,18 @@ func (p *Plan) Encode() (string, error) {
 }
 
 func Decode(snapshot string) (*Plan, error) {
+	var header struct{ Version int }
+	if err := json.Unmarshal([]byte(snapshot), &header); err != nil {
+		return nil, fmt.Errorf("decode storage plan version: %w", err)
+	}
+	if header.Version != planVersion {
+		return nil, fmt.Errorf("unsupported storage plan version %d; version %d is required", header.Version, planVersion)
+	}
 	var p Plan
 	decoder := json.NewDecoder(strings.NewReader(snapshot))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {
 		return nil, fmt.Errorf("decode storage plan: %w", err)
-	}
-	var extra interface{}
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("storage plan contains trailing data")
 	}
 	if err := p.validate(); err != nil {
 		return nil, err
@@ -266,8 +318,11 @@ func Decode(snapshot string) (*Plan, error) {
 }
 
 func (p *Plan) validate() error {
-	if p == nil || p.Version != 1 {
+	if p == nil {
 		return fmt.Errorf("unsupported storage plan version")
+	}
+	if p.Version != planVersion {
+		return fmt.Errorf("unsupported storage plan version %d; version %d is required", p.Version, planVersion)
 	}
 	if !validName(p.TaskID) {
 		return fmt.Errorf("invalid storage task ID %q", p.TaskID)
@@ -322,6 +377,7 @@ func (p *Plan) validate() error {
 		}
 	}
 	paths := []string{path.Join(p.WorkDir, p.TaskID)}
+	mountRoots := make(map[string]bool, len(p.WorkerMounts))
 	for _, mount := range p.WorkerMounts {
 		if _, ok := volumes[mount.Name]; !ok {
 			return fmt.Errorf("worker mount references unknown volume %q", mount.Name)
@@ -335,6 +391,15 @@ func (p *Plan) validate() error {
 			}
 		}
 		paths = append(paths, mount.MountPath)
+		mountRoots[mount.MountPath] = true
+	}
+	if err := storage.ValidateInputRoutes(p.InputRoutes); err != nil {
+		return fmt.Errorf("invalid storage input routes: %w", err)
+	}
+	for _, route := range p.InputRoutes {
+		if !mountRoots[route.Root] {
+			return fmt.Errorf("mounted input root %q does not match an explicit worker mount", route.Root)
+		}
 	}
 	return nil
 }

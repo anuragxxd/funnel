@@ -256,6 +256,47 @@ func TestInvalidStorageFailsBeforeCreatingResources(t *testing.T) {
 	}
 }
 
+func TestMountedInputReferencesResolveBeforeResourceCreation(t *testing.T) {
+	for _, mountName := range []string{"missing", "reference-root"} {
+		t.Run(mountName, func(t *testing.T) {
+			ctx := context.Background()
+			client := bindingClient()
+			conf := bindingConfig(t, existingBinding("shared"))
+			conf.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{{Name: "reference-root", Mount: "mountPath: /reference\nreadOnly: true"}}
+			conf.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://reference", WorkerMount: mountName}}
+			if _, err := client.CoreV1().PersistentVolumeClaims("tasks").Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "tasks"}, Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}}}, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			client.ClearActions()
+			backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
+			err := backend.Submit(ctx, &tes.Task{Id: "input-binding"}, conf)
+			if mountName == "missing" {
+				if err == nil || !strings.Contains(err.Error(), "unknown worker mount") {
+					t.Fatalf("missing reference was not rejected: %v", err)
+				}
+				if len(client.Actions()) != 0 {
+					t.Fatalf("invalid input reference reached Kubernetes: %v", client.Actions())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, err := client.BatchV1().Jobs("tasks").Get(ctx, "input-binding", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := storageplan.Decode(job.Annotations[storageplan.Annotation])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.InputRoutes) != 1 || plan.InputRoutes[0].Root != "/reference" || plan.InputRoutes[0].URLPrefix != "s3://reference" {
+				t.Fatalf("submitted Job lost the named input binding: %+v", plan.InputRoutes)
+			}
+		})
+	}
+}
+
 func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()

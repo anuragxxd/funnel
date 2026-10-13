@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,10 +22,13 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mount, "input"), []byte("submitted mount"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	submitted.MountedInputs = []*config.MountedInput{{URLPrefix: "s3://bucket/ref", Path: mount}}
 	submitted.Kubernetes.Storage = &config.KubernetesStorage{
 		WorkspaceVolume: "workspace",
-		Bindings:        []*config.KubernetesStorageBinding{{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "submitted-claim"}}},
+		Bindings: []*config.KubernetesStorageBinding{
+			{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "submitted-claim"}},
+			{Name: "reference", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "reference-claim"}, WorkerMounts: []*config.KubernetesWorkerMount{{Name: "reference-input", Mount: fmt.Sprintf("mountPath: %q\nreadOnly: true", mount)}}},
+		},
+		MountedInputs: []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/ref", WorkerMount: "reference-input"}},
 	}
 	plan, err := storageplan.Resolve(&tes.Task{Id: "snapshot-test"}, submitted)
 	if err != nil {
@@ -42,7 +46,7 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	conf.AmazonS3.Disabled = true
 	conf.Worker.WorkDir = "/different-work"
 	conf.Kubernetes.JobsNamespace = "different-tasks"
-	conf.MountedInputs = []*config.MountedInput{{URLPrefix: "s3://bucket/ref", Path: "/different-mount"}}
+	conf.Kubernetes.Storage = &config.KubernetesStorage{MountedInputs: []*config.KubernetesMountedInput{{URLPrefix: "s3://wrong/ref", WorkerMount: "unknown-static-mount"}}}
 	opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"snapshot-test","executors":[{"image":"alpine:3.21","command":["true"]}]}`))}
 	w, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 	if err != nil {
@@ -63,7 +67,7 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "submitted mount" || conf.MountedInputs[0].Path != "/different-mount" {
+	if string(data) != "submitted mount" || conf.Kubernetes.Storage.MountedInputs[0].WorkerMount != "unknown-static-mount" {
 		t.Fatal("worker did not use the submitted mount independently of its static config")
 	}
 }

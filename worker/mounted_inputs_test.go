@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/events"
 	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
@@ -23,7 +22,7 @@ func TestDownloadMountedInputDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "a%20b.txt"), []byte("literal percent key"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := storage.WithMountedInputs(&storage.Mux{}, []*config.MountedInput{{URLPrefix: "s3://bucket/ref", Path: root}})
+	store, err := storage.WithMountedInputs(&storage.Mux{}, []storage.InputRoute{{URLPrefix: "s3://bucket/ref", Root: root}})
 	if err != nil {
 		t.Fatal(err)
 	}

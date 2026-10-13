@@ -10,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/ohsu-comp-bio/funnel/config"
 )
 
 // MountedInputs overrides reads for explicit mounts. Writes and URL joins always
@@ -21,6 +19,11 @@ type MountedInputs struct {
 	mounts []inputMount
 }
 
+type InputRoute struct {
+	URLPrefix string
+	Root      string
+}
+
 type inputMount struct {
 	prefix string
 	root   string
@@ -28,30 +31,40 @@ type inputMount struct {
 
 // WithMountedInputs configures worker-local reads without changing server storage.
 // Mount directories are opened on access, after Kubernetes has mounted them.
-func WithMountedInputs(backend Storage, mappings []*config.MountedInput) (*MountedInputs, error) {
+func WithMountedInputs(backend Storage, routes []InputRoute) (*MountedInputs, error) {
 	if backend == nil {
 		return nil, errors.New("mounted inputs require a fallback storage backend")
 	}
-	s := &MountedInputs{Storage: backend}
-	for _, mapping := range mappings {
-		if mapping == nil {
-			return nil, errors.New("nil mounted input mapping")
-		}
-		if err := validateInputURL(mapping.URLPrefix); err != nil {
+	mounts, err := resolveInputMounts(routes)
+	if err != nil {
+		return nil, err
+	}
+	return &MountedInputs{Storage: backend, mounts: mounts}, nil
+}
+
+func ValidateInputRoutes(routes []InputRoute) error {
+	_, err := resolveInputMounts(routes)
+	return err
+}
+
+func resolveInputMounts(routes []InputRoute) ([]inputMount, error) {
+	mounts := make([]inputMount, 0, len(routes))
+	for _, route := range routes {
+		if err := validateInputURL(route.URLPrefix); err != nil {
 			return nil, fmt.Errorf("mounted input prefix: %w", err)
 		}
-		if !filepath.IsAbs(mapping.Path) || filepath.Clean(mapping.Path) != mapping.Path {
-			return nil, fmt.Errorf("mounted input path %q must be absolute and clean", mapping.Path)
+		if !filepath.IsAbs(route.Root) || filepath.Clean(route.Root) != route.Root {
+			return nil, fmt.Errorf("mounted input root %q must be absolute and clean", route.Root)
 		}
-		prefix := strings.TrimSuffix(mapping.URLPrefix, "/")
-		for _, existing := range s.mounts {
+		prefix := strings.TrimSuffix(route.URLPrefix, "/")
+		for _, existing := range mounts {
 			if inputPrefix(prefix, existing.prefix) || inputPrefix(existing.prefix, prefix) {
-				return nil, fmt.Errorf("overlapping mounted input prefixes %q and %q", mapping.URLPrefix, existing.prefix)
+				return nil, fmt.Errorf("overlapping mounted input prefixes %q and %q", route.URLPrefix, existing.prefix)
 			}
 		}
-		s.mounts = append(s.mounts, inputMount{prefix: prefix, root: mapping.Path})
+		mounts = append(mounts, inputMount{prefix: prefix, root: route.Root})
 	}
-	return s, nil
+	return mounts, nil
 }
 
 // Funnel's S3 backends use literal keys, including spaces, #, and percent signs.

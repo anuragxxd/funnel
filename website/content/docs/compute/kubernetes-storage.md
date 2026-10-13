@@ -70,16 +70,20 @@ Kubernetes:
       - Name: reference-data
         ExistingClaim: reference-datasets
         WorkerMounts:
-          - |
-            mountPath: /mnt/reference
-            readOnly: true
+          - Name: reference-root
+            Mount: |
+              mountPath: /mnt/reference
+              readOnly: true
+    MountedInputs:
+      - URLPrefix: s3://analysis-data/reference/
+        WorkerMount: reference-root
 ```
 
-`WorkerMounts` contains native Kubernetes `volumeMount` snippets. Funnel assigns each mount the binding's name. `subPath` can restrict a view to a directory. The same workspace binding can also provide a separate root view through `WorkerMounts`. Worker mount paths cannot overlap the task workspace or existing mounts.
+`WorkerMounts` names worker-visible views. Each `Mount` contains one native Kubernetes `volumeMount` YAML object. Its logical `Name` must be unique across the storage configuration. Funnel sets the native volume name from the enclosing binding. `subPath` can restrict a view to a directory. The same workspace binding can also provide a separate root view through `WorkerMounts`. Worker mount paths cannot overlap the task workspace or existing mounts.
 
 Only the workspace reaches executor Pods through generated mounts. Extra worker mounts do not expose data automatically at TES input paths. A storage backend must still prepare those inputs.
 
-`MountedInputs` maps S3 input URL prefixes to these worker mount paths. Matching reads copy files into the workspace; outputs still use the storage API. See [Mounted inputs](../../storage/mounted-inputs/).
+`Storage.MountedInputs` references a named worker mount. Funnel derives the read root from that mount's `mountPath`; the input mapping contains no path. Kubernetes already applies `subPath` or `subPathExpr` to the mounted view, so Funnel does not append either value to the read root. Unknown mount names and overlapping URL prefixes fail task planning. Matching reads copy files into the workspace; outputs still use the storage API. See [Mounted inputs](../../storage/mounted-inputs/).
 
 ## Job template contract
 
@@ -109,7 +113,9 @@ Rebuild Go RPC plugins with the updated config package before passing explicit b
 
 ### Migrate contributor configuration
 
-The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20, uses `WorkerImage` at 24 and `Storage` at 25, and adds `Config.MountedInputs` at 34. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
+Earlier revisions of this draft accepted top-level URL-to-path mappings and bare mount strings. Replace those with named `WorkerMounts` and references under `Kubernetes.Storage.MountedInputs`. They are not parallel configuration options. The resolved snapshot format is version 2. Finish or clean up Jobs created by earlier draft binaries with those binaries before upgrading; the new decoder rejects old snapshots.
+
+The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. `KubernetesStorage.MountedInputs` uses field 5. Config field 34 and its old top-level `MountedInputs` name are reserved. The old string-valued `KubernetesStorageBinding.WorkerMounts` field 4 is reserved; named mount records use field 5. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
 
 For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `ExistingClaim`. Keep `WorkerImage` as an independent field.
 

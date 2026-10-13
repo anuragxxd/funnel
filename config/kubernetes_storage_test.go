@@ -22,9 +22,10 @@ Kubernetes:
       - Name: shared-inputs
         ExistingClaim: shared-data
         WorkerMounts:
-          - |-
-            mountPath: /data
-            subPath: inputs
+          - Name: input-view
+            Mount: |-
+              mountPath: /data
+              subPath: inputs
       - Name: mounted-s3
         Templates:
           PVC: |-
@@ -33,12 +34,10 @@ Kubernetes:
           PV: |-
             apiVersion: v1
             kind: PersistentVolume
+    MountedInputs:
+      - URLPrefix: s3://bucket/prefix/
+        WorkerMount: input-view
 `)
-	input = append(input, []byte(`
-MountedInputs:
-  - URLPrefix: s3://bucket/prefix/
-    Path: /mounted/input
-`)...)
 
 	got := EmptyConfig()
 	if err := Parse(input, got); err != nil {
@@ -46,17 +45,17 @@ MountedInputs:
 	}
 
 	want := &Config{
-		MountedInputs: []*MountedInput{{URLPrefix: "s3://bucket/prefix/", Path: "/mounted/input"}},
 		Kubernetes: &Kubernetes{
 			Storage: &KubernetesStorage{
 				WorkspaceVolume:   "shared",
 				WorkerContainer:   "funnel-worker",
 				ExecutorContainer: "funnel-executor",
+				MountedInputs:     []*KubernetesMountedInput{{URLPrefix: "s3://bucket/prefix/", WorkerMount: "input-view"}},
 				Bindings: []*KubernetesStorageBinding{
 					{
 						Name:         "shared-inputs",
 						Source:       &KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"},
-						WorkerMounts: []string{"mountPath: /data\nsubPath: inputs"},
+						WorkerMounts: []*KubernetesWorkerMount{{Name: "input-view", Mount: "mountPath: /data\nsubPath: inputs"}},
 					},
 					{
 						Name: "mounted-s3",
@@ -157,9 +156,23 @@ func TestKubernetesSchemaFieldCompatibility(t *testing.T) {
 		}
 	}
 
-	mountedInputs := (&Config{}).ProtoReflect().Descriptor().Fields().ByName("MountedInputs")
-	if mountedInputs == nil || mountedInputs.Number() != 34 {
-		t.Fatalf("Config.MountedInputs field number = %v, want 34", mountedInputs)
+	configDescriptor := (&Config{}).ProtoReflect().Descriptor()
+	if configDescriptor.Fields().ByName("MountedInputs") != nil {
+		t.Fatal("Config.MountedInputs must be removed")
+	}
+	if !configDescriptor.ReservedRanges().Has(34) || !configDescriptor.ReservedNames().Has("MountedInputs") {
+		t.Fatal("Config.MountedInputs field 34 must be reserved")
+	}
+	storageFields := (&KubernetesStorage{}).ProtoReflect().Descriptor().Fields()
+	if field := storageFields.ByName("MountedInputs"); field == nil || field.Number() != 5 {
+		t.Fatalf("KubernetesStorage.MountedInputs field = %v, want 5", field)
+	}
+	bindingDescriptor := (&KubernetesStorageBinding{}).ProtoReflect().Descriptor()
+	if field := bindingDescriptor.Fields().ByName("WorkerMounts"); field == nil || field.Number() != 5 {
+		t.Fatalf("KubernetesStorageBinding.WorkerMounts field = %v, want 5", field)
+	}
+	if !bindingDescriptor.ReservedRanges().Has(4) {
+		t.Fatal("KubernetesStorageBinding field 4 must be reserved")
 	}
 }
 
@@ -174,6 +187,29 @@ func TestRemovedKubernetesStorageKeysAreRejected(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), fmt.Sprintf(`unknown field %q`, name)) {
 				t.Fatalf("expected unknown field error for %q, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestOldMountedInputSchemaIsRejected(t *testing.T) {
+	for name, raw := range map[string]string{
+		"top-level mounted inputs": `MountedInputs:
+  - URLPrefix: s3://bucket/prefix/
+    Path: /mounted/input
+`,
+		"string worker mount": `Kubernetes:
+  Storage:
+    Bindings:
+      - Name: data
+        ExistingClaim: shared-data
+        WorkerMounts:
+          - mountPath: /data
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := Parse([]byte(raw), EmptyConfig()); err == nil {
+				t.Fatal("old mounted input schema was accepted")
 			}
 		})
 	}

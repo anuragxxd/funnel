@@ -68,6 +68,7 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 	}
 
 	// The executor always defaults to docker, unless explicitly set to kubernetes.
+	var inputRoutes []storage.InputRoute
 	var executor = worker.Executor{
 		Backend: "docker",
 	}
@@ -88,7 +89,7 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 			}
 			conf = googleproto.Clone(conf).(*config.Config)
 			conf.Worker.WorkDir = plan.WorkDir
-			conf.MountedInputs = plan.MountedInputs
+			inputRoutes = plan.InputRoutes
 			executor.StoragePlan = plan
 			executor.JobsNamespace = plan.Namespace
 		} else if conf.Kubernetes.Storage != nil {
@@ -104,8 +105,8 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 	}
 	mux.AttachLogger(log)
 	var store storage.Storage = mux
-	if len(conf.MountedInputs) > 0 {
-		store, err = storage.WithMountedInputs(mux, conf.MountedInputs)
+	if len(inputRoutes) > 0 {
+		store, err = storage.WithMountedInputs(mux, inputRoutes)
 		if err != nil {
 			return nil, fmt.Errorf("configuring mounted inputs: %w", err)
 		}

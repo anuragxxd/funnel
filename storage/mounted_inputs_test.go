@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/ohsu-comp-bio/funnel/config"
 )
 
 type mountedFallback struct {
@@ -42,7 +40,7 @@ func mountedFixture(t *testing.T) (*MountedInputs, *mountedFallback, string) {
 		t.Fatal(err)
 	}
 	fallback := &mountedFallback{}
-	s, err := WithMountedInputs(fallback, []*config.MountedInput{{URLPrefix: "s3://bucket/reference/", Path: root}})
+	s, err := WithMountedInputs(fallback, []InputRoute{{URLPrefix: "s3://bucket/reference/", Root: root}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,20 +169,19 @@ func TestMountedInputsCancellationAndValidation(t *testing.T) {
 	if _, err := s.List(ctx, "s3://bucket/reference"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("list: %v", err)
 	}
-	for _, mappings := range [][]*config.MountedInput{
-		{nil},
-		{{URLPrefix: "file:///tmp", Path: root}},
-		{{URLPrefix: "s3://bucket", Path: "relative"}},
-		{{URLPrefix: "s3://bucket/../bad", Path: root}},
-		{{URLPrefix: "s3://bucket?query", Path: root}},
-		{{URLPrefix: "s3://bucket/ref", Path: root}, {URLPrefix: "s3://bucket/ref/sub", Path: root}},
-		{{URLPrefix: "s3://bucket/ref", Path: root}, {URLPrefix: "s3://bucket/ref/", Path: root}},
+	for _, mappings := range [][]InputRoute{
+		{{URLPrefix: "file:///tmp", Root: root}},
+		{{URLPrefix: "s3://bucket", Root: "relative"}},
+		{{URLPrefix: "s3://bucket/../bad", Root: root}},
+		{{URLPrefix: "s3://bucket?query", Root: root}},
+		{{URLPrefix: "s3://bucket/ref", Root: root}, {URLPrefix: "s3://bucket/ref/sub", Root: root}},
+		{{URLPrefix: "s3://bucket/ref", Root: root}, {URLPrefix: "s3://bucket/ref/", Root: root}},
 	} {
 		if _, err := WithMountedInputs(&Fake{}, mappings); err == nil {
 			t.Fatalf("invalid mapping accepted: %+v", mappings)
 		}
 	}
-	if _, err := WithMountedInputs(&Fake{}, []*config.MountedInput{{URLPrefix: "s3://bucket/ref", Path: root}, {URLPrefix: "s3://bucket/refs", Path: root}}); err != nil {
+	if _, err := WithMountedInputs(&Fake{}, []InputRoute{{URLPrefix: "s3://bucket/ref", Root: root}, {URLPrefix: "s3://bucket/refs", Root: root}}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -53,15 +53,8 @@ message Config {
   FTPStorage FTPStorage = 31;
   // Plugins
   Plugins Plugins = 32;
-  // MountedInputs opts workers into mapping S3 URL prefixes to local mount roots.
-  repeated MountedInput MountedInputs = 34;
-}
-
-// MountedInput maps an opt-in S3 URL prefix to a worker-local mount root.
-message MountedInput {
-  string URLPrefix = 1;
-  // Path is the local directory where objects under URLPrefix are mounted.
-  string Path = 2;
+  reserved 34;
+  reserved "MountedInputs";
 }
 
 // This config matches the funnel plugins repo protobuf
@@ -401,9 +394,17 @@ message KubernetesStorage {
   // mounts. It may be empty when the pod has one regular
   // container; set it when the pod has multiple regular containers.
   string ExecutorContainer = 4;
+  // MountedInputs maps S3 prefixes to named worker mount views.
+  repeated KubernetesMountedInput MountedInputs = 5;
 }
 
-// KubernetesStorageBinding names a volume source and the mount snippets to add
+// KubernetesMountedInput maps an S3 prefix to an explicitly named worker mount.
+message KubernetesMountedInput {
+  string URLPrefix = 1;
+  string WorkerMount = 2;
+}
+
+// KubernetesStorageBinding names a volume source and the native mounts to add
 // to worker pods. Executor pods derive their mounts from the task's volumes.
 message KubernetesStorageBinding {
   string Name = 1;
@@ -413,9 +414,17 @@ message KubernetesStorageBinding {
     KubernetesStorageTemplates Templates = 3;
   }
 
-  // WorkerMounts contains native Kubernetes volumeMount YAML snippets. The
-  // planner sets each mount's volume name to the binding's Name.
-  repeated string WorkerMounts = 4;
+  reserved 4;
+
+  // WorkerMounts contains named native Kubernetes volumeMount YAML snippets.
+  // The planner sets each mount's volume name to the binding's Name.
+  repeated KubernetesWorkerMount WorkerMounts = 5;
+}
+
+// KubernetesWorkerMount gives a native worker mount a stable logical name.
+message KubernetesWorkerMount {
+  string Name = 1;
+  string Mount = 2;
 }
 
 // KubernetesStorageTemplates contains native Kubernetes YAML resource bodies.

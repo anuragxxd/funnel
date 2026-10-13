@@ -10,7 +10,7 @@ menu:
 
 `Kubernetes.Storage` binds a task workspace to a named Kubernetes volume. A binding either references an existing PVC or supplies native PVC and optional PV templates. Additional bindings can expose data volumes to the worker.
 
-When `Storage` is absent, Funnel uses the existing `PVTemplate`, `PVCTemplate`, and Job template behavior. Storage bindings do not change TES inputs, outputs, or file transfers. In particular, mounting an S3 bucket does not cause Funnel to bypass S3 transfers or treat local writes as completed uploads.
+When `Storage` is absent, Funnel uses the existing `PVTemplate`, `PVCTemplate`, and Job template behavior. Storage bindings do not change TES inputs, outputs, or task paths. A configured GenericS3 mounted read changes where the worker reads matching inputs, but the worker still copies each input into the task workspace.
 
 ## Use an existing claim
 
@@ -74,16 +74,13 @@ Kubernetes:
             Mount: |
               mountPath: /mnt/reference
               readOnly: true
-    MountedInputs:
-      - URLPrefix: s3://analysis-data/reference/
-        WorkerMount: reference-root
 ```
 
 `WorkerMounts` names worker-visible views. Each `Mount` contains one native Kubernetes `volumeMount` YAML object. Its logical `Name` must be unique across the storage configuration. Funnel sets the native volume name from the enclosing binding. `subPath` can restrict a view to a directory. The same workspace binding can also provide a separate root view through `WorkerMounts`. Worker mount paths cannot overlap the task workspace or existing mounts.
 
 Only the workspace reaches executor Pods through generated mounts. Extra worker mounts do not expose data automatically at TES input paths. A storage backend must still prepare those inputs.
 
-`Storage.MountedInputs` references a named worker mount. Funnel derives the read root from that mount's `mountPath`; the input mapping contains no path. Kubernetes already applies `subPath` or `subPathExpr` to the mounted view, so Funnel does not append either value to the read root. Unknown mount names and overlapping URL prefixes fail task planning. Matching reads copy files into the workspace; outputs still use the storage API. See [Mounted inputs](../../storage/mounted-inputs/).
+GenericS3 `MountedRead` settings name one of these worker mounts. Funnel resolves the name from the backend option and records the mount's `mountPath` as the read root in the storage plan. Kubernetes applies `subPath` or `subPathExpr` to the mounted view. Funnel does not append either value, or the S3 prefix, to the read root. Configured mounted reads require `Kubernetes.Storage` and its submitted plan. See [Mounted inputs](../../storage/mounted-inputs/).
 
 ## Job template contract
 
@@ -95,7 +92,7 @@ The worker Job name must equal `TaskId`. `Worker.WorkDir` must be absolute. Per-
 
 `Kubernetes.WorkerImage` selects the image supplied to the worker Job template and skips server Pod discovery. When it is absent, Funnel keeps the existing image discovery behavior. Templates use `{{.Image}}` to consume that setting.
 
-The server records a versioned plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. The worker uses the submitted claim names, namespace, and work directory even with a static ConfigMap. Do not set that environment variable or annotation in templates.
+The server records a versioned plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. Version 3 records mounted S3 reads as `S3ReadMounts{Endpoint, Bucket, Prefix, Root}` without credentials. The worker uses the submitted claim names, namespace, work directory, and read mounts even with a static ConfigMap. Do not set that environment variable or annotation in templates.
 
 Helm resolves deployment values before Funnel renders task variables. Charts must preserve literal Funnel expressions such as `{{.TaskId}}` through Helm rendering, as they do for existing Funnel Job templates.
 
@@ -111,11 +108,15 @@ Provisioning checks the worker Job before and after each resource creation. If c
 
 Rebuild Go RPC plugins with the updated config package before passing explicit bindings through them; that package registers the new source variants for gob transport. Each binding must select exactly one of `ExistingClaim` or `Templates`. Duplicate binding names are errors, including duplicates produced by configuration merges.
 
-### Migrate contributor configuration
+### Migrate mounted reads and older snapshots
 
-Earlier revisions of this draft accepted top-level URL-to-path mappings and bare mount strings. Replace those with named `WorkerMounts` and references under `Kubernetes.Storage.MountedInputs`. They are not parallel configuration options. The resolved snapshot format is version 2. Finish or clean up Jobs created by earlier draft binaries with those binaries before upgrading; the new decoder rejects old snapshots.
+Configure a mounted S3 read under the matching `GenericS3` backend's `MountedRead` option. Set `WorkerMount` to a named `WorkerMounts` entry. Set `Prefix` to a bucket-relative key prefix, or leave it empty to use the whole bucket. The mounted root represents that prefix. Do not add the prefix or a native subpath to the worker path.
 
-The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. `KubernetesStorage.MountedInputs` uses field 5. Config field 34 and its old top-level `MountedInputs` name are reserved. The old string-valued `KubernetesStorageBinding.WorkerMounts` field 4 is reserved; named mount records use field 5. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
+The server resolves mounted reads into the version 3 storage plan. Workers use those submitted mounts and ignore static `MountedRead` settings, including when the submitted plan has no mounts. Only the worker can read from the mounted filesystem. The API server's `NewMux` does not enable filesystem reads. For a matching GenericS3 backend, the worker reads a matching input from the mount and copies it into the task workspace. Unmatched URLs use the API transfer path, and outputs always use the API.
+
+The version 3 decoder cannot run or clean up Jobs with version 1 or version 2 snapshots. Finish those tasks and clean up their Jobs with the older binary before upgrading. This applies to both existing-claim and PVC-template storage configurations.
+
+The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. `KubernetesStorage` field 5 and the `MountedInputs` field name are reserved. Config field 34 and its old top-level `MountedInputs` name are also reserved. The old string-valued `KubernetesStorageBinding.WorkerMounts` field 4 is reserved; named mount records use field 5. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
 
 For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `ExistingClaim`. Keep `WorkerImage` as an independent field.
 
@@ -123,7 +124,7 @@ Chicago's `S3FilesFilesystemId` used field 20, which conflicts with upstream `Fo
 
 ## Verify against a local cluster
 
-The opt-in integration test uses an existing Kubernetes context, creates temporary namespaces, and runs worker and executor Jobs with `alpine:3.21`. Use a disposable single-node cluster with a `standard` StorageClass and access to that image. The test checks file exchange through a provisioned claim, an existing claim, and an explicit hostPath PV/PVC pair. It then verifies ownership-based cleanup, including PV protection and Job finalizers.
+The opt-in integration test uses an existing Kubernetes context, creates temporary namespaces, and runs worker and executor Jobs with `alpine:3.21`. Use a disposable single-node cluster with a `standard` StorageClass and access to that image. The test checks file exchange through a provisioned claim, an existing claim, and an explicit hostPath PV and PVC pair. It then verifies ownership-based cleanup, including PV protection and Job finalizers.
 
 ```sh
 FUNNEL_KUBERNETES_TEST_KUBECONFIG=/path/to/test-kubeconfig \

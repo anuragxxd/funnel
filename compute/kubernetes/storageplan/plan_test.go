@@ -25,6 +25,19 @@ func namedMount(name, raw string) *config.KubernetesWorkerMount {
 	return &config.KubernetesWorkerMount{Name: name, Mount: raw}
 }
 
+func mountedS3(bucket, prefix, workerMount string) *config.GenericS3Storage {
+	return &config.GenericS3Storage{
+		Endpoint: "https://s3.example.test/custom/path",
+		Key:      "access-key",
+		Secret:   "access-secret",
+		Bucket:   bucket,
+		MountedRead: &config.S3MountedRead{
+			WorkerMount: workerMount,
+			Prefix:      prefix,
+		},
+	}
+}
+
 const pvcTemplate = `apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -116,18 +129,19 @@ func TestWorkspaceAllowsReadOnlyRootView(t *testing.T) {
 	}
 }
 
-func TestMountedInputRouteTracksNativeMountPathAndSnapshot(t *testing.T) {
+func TestS3ReadMountTracksNativeMountPathAndSnapshot(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
 		namedMount("reference-view", "mountPath: /reference\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"),
 	}
-	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/reference/", WorkerMount: "reference-view"}}
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3("reference-bucket", "reference/", "reference-view")}
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.InputRoutes) != 1 || p.InputRoutes[0] != (storage.InputRoute{URLPrefix: "s3://bucket/reference/", Root: "/reference"}) {
-		t.Fatalf("input route did not use the native mount path: %+v", p.InputRoutes)
+	wantReadMount := storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "reference-bucket", Prefix: "reference/", Root: "/reference"}
+	if len(p.S3ReadMounts) != 1 || p.S3ReadMounts[0] != wantReadMount {
+		t.Fatalf("S3 read mount did not preserve configured values and native root: %+v", p.S3ReadMounts)
 	}
 	if len(p.WorkerMounts) != 1 || p.WorkerMounts[0].MountPath != "/reference" || p.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" || !p.WorkerMounts[0].ReadOnly {
 		t.Fatalf("native mount fields changed: %+v", p.WorkerMounts)
@@ -145,42 +159,48 @@ func TestMountedInputRouteTracksNativeMountPathAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(snapshot, "access-key") || strings.Contains(snapshot, "access-secret") {
+		t.Fatalf("storage snapshot contains S3 credentials: %s", snapshot)
+	}
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /changed"
-	c.Kubernetes.Storage.MountedInputs[0].URLPrefix = "s3://bucket/changed/"
+	c.GenericS3[0].MountedRead.Prefix = "changed/"
+	c.GenericS3[0].Endpoint = "https://changed.example.test"
 	restored, err := Decode(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.InputRoutes[0] != (storage.InputRoute{URLPrefix: "s3://bucket/reference/", Root: "/reference"}) || restored.WorkerMounts[0].MountPath != "/reference" || restored.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" {
-		t.Fatalf("snapshot changed after config mutation: routes=%+v mounts=%+v", restored.InputRoutes, restored.WorkerMounts)
+	if restored.S3ReadMounts[0] != wantReadMount || restored.WorkerMounts[0].MountPath != "/reference" || restored.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" {
+		t.Fatalf("snapshot changed after config mutation: reads=%+v mounts=%+v", restored.S3ReadMounts, restored.WorkerMounts)
 	}
 
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /renamed\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"
+	c.GenericS3[0].MountedRead.Prefix = "reference/"
+	c.GenericS3[0].Endpoint = wantReadMount.Endpoint
 	renamed, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renamed.InputRoutes[0].Root != "/renamed" || renamed.WorkerMounts[0].MountPath != "/renamed" {
-		t.Fatalf("renamed mount path did not update route and worker mount: routes=%+v mounts=%+v", renamed.InputRoutes, renamed.WorkerMounts)
+	if renamed.S3ReadMounts[0].Root != "/renamed" || renamed.WorkerMounts[0].MountPath != "/renamed" {
+		t.Fatalf("renamed mount path did not update S3 read mount and worker mount: reads=%+v mounts=%+v", renamed.S3ReadMounts, renamed.WorkerMounts)
 	}
 }
 
-func TestMountedInputReferencesResolveByNameRegardlessOfOrder(t *testing.T) {
+func TestS3MountedReadsResolveByNameRegardlessOfMountOrder(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
 		namedMount("protein-view", "mountPath: /views/protein"),
 		namedMount("reads-view", "mountPath: /views/reads"),
 	}
-	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{
-		{URLPrefix: "s3://bucket/reads/", WorkerMount: "reads-view"},
-		{URLPrefix: "s3://bucket/protein/", WorkerMount: "protein-view"},
+	c.GenericS3 = []*config.GenericS3Storage{
+		mountedS3("reads-bucket", "reads/", "reads-view"),
+		mountedS3("protein-bucket", "protein/", "protein-view"),
 	}
 	first, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.InputRoutes[0].URLPrefix != "s3://bucket/reads/" || first.InputRoutes[0].Root != "/views/reads" || first.InputRoutes[1].URLPrefix != "s3://bucket/protein/" || first.InputRoutes[1].Root != "/views/protein" {
-		t.Fatalf("named input views resolved incorrectly: %+v", first.InputRoutes)
+	if first.S3ReadMounts[0] != (storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "reads-bucket", Prefix: "reads/", Root: "/views/reads"}) || first.S3ReadMounts[1] != (storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "protein-bucket", Prefix: "protein/", Root: "/views/protein"}) {
+		t.Fatalf("named S3 read mounts resolved incorrectly: %+v", first.S3ReadMounts)
 	}
 
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0], c.Kubernetes.Storage.Bindings[0].WorkerMounts[1] = c.Kubernetes.Storage.Bindings[0].WorkerMounts[1], c.Kubernetes.Storage.Bindings[0].WorkerMounts[0]
@@ -188,12 +208,12 @@ func TestMountedInputReferencesResolveByNameRegardlessOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(first.InputRoutes, second.InputRoutes) {
-		t.Fatalf("mount list order changed name-based routes: first=%+v second=%+v", first.InputRoutes, second.InputRoutes)
+	if !reflect.DeepEqual(first.S3ReadMounts, second.S3ReadMounts) {
+		t.Fatalf("mount list order changed name-based S3 reads: first=%+v second=%+v", first.S3ReadMounts, second.S3ReadMounts)
 	}
 }
 
-func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
+func TestInvalidS3MountedReadsFailDuringResolution(t *testing.T) {
 	tests := []struct {
 		name   string
 		change func(*config.Config)
@@ -203,7 +223,7 @@ func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
 			name: "unknown reference before template parsing",
 			change: func(c *config.Config) {
 				c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: "invalid"}}
-				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "missing-view"}}
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "missing-view")}
 			},
 			want: "unknown worker mount",
 		},
@@ -232,7 +252,7 @@ func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
 		{
 			name: "invalid reference name",
 			change: func(c *config.Config) {
-				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "bad/name"}}
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "bad/name")}
 			},
 			want: "invalid worker mount reference",
 		},
@@ -244,11 +264,46 @@ func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
 			want: "nil worker mount",
 		},
 		{
-			name: "nil input reference",
+			name: "disabled S3 backend",
 			change: func(c *config.Config) {
-				c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{nil}
+				backend := mountedS3("bucket", "input/", "input-view")
+				backend.Disabled = true
+				c.GenericS3 = []*config.GenericS3Storage{backend}
 			},
-			want: "nil entry",
+			want: "disabled or invalid",
+		},
+		{
+			name: "invalid S3 backend",
+			change: func(c *config.Config) {
+				backend := mountedS3("bucket", "input/", "input-view")
+				backend.Secret = ""
+				c.GenericS3 = []*config.GenericS3Storage{backend}
+			},
+			want: "disabled or invalid",
+		},
+		{
+			name: "missing bucket",
+			change: func(c *config.Config) {
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3("", "input/", "input-view")}
+			},
+			want: "requires a bucket",
+		},
+		{
+			name: "duplicate API-only backend identity",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input")}
+				other := mountedS3("bucket", "", "")
+				other.MountedRead = nil
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view"), other}
+			},
+			want: "duplicate mounted S3 backend",
+		},
+		{
+			name: "duplicate endpoint and bucket",
+			change: func(c *config.Config) {
+				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input"), namedMount("other-view", "mountPath: /other")}
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view"), mountedS3("bucket", "other/", "other-view")}
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -263,14 +318,28 @@ func TestInvalidMountedInputReferencesFailDuringResolution(t *testing.T) {
 	}
 	c := existingConfig()
 	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input")}
-	c.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://bucket/input", WorkerMount: "input-view"}}
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view")}
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.InputRoutes[0].Root = "/unmounted"
+	p.S3ReadMounts[0].Root = "/unmounted"
 	if err := p.validate(); err == nil || !strings.Contains(err.Error(), "does not match an explicit worker mount") {
-		t.Fatalf("uncovered input route root accepted: %v", err)
+		t.Fatalf("uncovered S3 read mount root accepted: %v", err)
+	}
+}
+
+func TestS3MountedReadRequiresKubernetesStorage(t *testing.T) {
+	for _, change := range []func(*config.Config){
+		func(c *config.Config) { c.Kubernetes.Storage = nil },
+		func(c *config.Config) { c.Kubernetes = nil },
+	} {
+		c := existingConfig()
+		c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view")}
+		change(c)
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "require Kubernetes.Storage") {
+			t.Fatalf("configured S3 mounted read without Kubernetes.Storage was not rejected: %v", err)
+		}
 	}
 }
 
@@ -539,17 +608,17 @@ func TestInvalidSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":2`, `"Version":1`, 1), strings.Replace(snapshot, `"Version":2`, `"Version":3`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
+	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":3`, `"Version":2`, 1), strings.Replace(snapshot, `"Version":3`, `"Version":4`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
 		if _, err := Decode(invalid); err == nil {
 			t.Fatalf("invalid snapshot accepted: %s", invalid)
 		}
 	}
-	if _, err := Decode(strings.Replace(snapshot, `"Version":2`, `"Version":1`, 1)); err == nil || !strings.Contains(err.Error(), "version 2 is required") {
-		t.Fatalf("old storage plan snapshot was not rejected clearly: %v", err)
+	if _, err := Decode(strings.Replace(snapshot, `"Version":3`, `"Version":2`, 1)); err == nil || !strings.Contains(err.Error(), "version 3 is required") {
+		t.Fatalf("version 2 storage plan snapshot was not rejected clearly: %v", err)
 	}
-	oldSnapshot := `{"Version":1,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","MountedInputs":[{"URLPrefix":"s3://bucket/ref","Path":"/mnt/reference"}],"Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
-	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 1; version 2 is required") {
-		t.Fatalf("actual v1 fields hid the actionable version error: %v", err)
+	oldSnapshot := `{"Version":2,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","InputRoutes":[{"URLPrefix":"s3://bucket/ref","Root":"/mnt/reference"}],"Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
+	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 2; version 3 is required") {
+		t.Fatalf("actual version 2 fields hid the actionable version error: %v", err)
 	}
 }
 

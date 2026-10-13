@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	planVersion = 2
+	planVersion = 3
 	Annotation  = "funnel.calypr.org/storage-plan"
 	Env         = "FUNNEL_KUBERNETES_STORAGE_PLAN"
 	Finalizer   = "funnel.calypr.org/storage-cleanup"
@@ -38,7 +38,7 @@ type Plan struct {
 	WorkspaceVolume   string
 	WorkerContainer   string
 	ExecutorContainer string
-	InputRoutes       []storage.InputRoute
+	S3ReadMounts      []storage.S3ReadMount
 	Volumes           []corev1.Volume
 	WorkerMounts      []corev1.VolumeMount
 	OwnedClaims       []string
@@ -47,9 +47,15 @@ type Plan struct {
 	PersistentVolumes []*corev1.PersistentVolume      `json:"-"`
 }
 
-// Resolve returns nil for deployments using the legacy storage configuration.
+// Resolve returns nil when Kubernetes storage is absent and no S3 reads are mounted.
 func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
-	if conf == nil || conf.Kubernetes == nil || conf.Kubernetes.Storage == nil {
+	if conf == nil {
+		return nil, nil
+	}
+	if conf.Kubernetes == nil || conf.Kubernetes.Storage == nil {
+		if hasS3MountedReads(conf.GenericS3) {
+			return nil, fmt.Errorf("S3 mounted reads require Kubernetes.Storage")
+		}
 		return nil, nil
 	}
 	if task == nil || task.Id == "" {
@@ -63,7 +69,11 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		return nil, fmt.Errorf("invalid storage namespace %q: %s", ns, strings.Join(errs, ", "))
 	}
 	storageConfig := conf.Kubernetes.Storage
-	workerMounts, inputRoutes, err := resolveWorkerMounts(storageConfig)
+	workerMounts, mountsByName, err := resolveWorkerMounts(storageConfig)
+	if err != nil {
+		return nil, err
+	}
+	s3ReadMounts, err := resolveS3ReadMounts(conf.GenericS3, mountsByName)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +85,7 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		WorkspaceVolume:   storageConfig.WorkspaceVolume,
 		WorkerContainer:   storageConfig.WorkerContainer,
 		ExecutorContainer: storageConfig.ExecutorContainer,
-		InputRoutes:       inputRoutes,
+		S3ReadMounts:      s3ReadMounts,
 		WorkerMounts:      workerMounts,
 	}
 	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
@@ -184,7 +194,16 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	return p, nil
 }
 
-func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.VolumeMount, []storage.InputRoute, error) {
+func hasS3MountedReads(backends []*config.GenericS3Storage) bool {
+	for _, backend := range backends {
+		if backend != nil && backend.MountedRead != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.VolumeMount, map[string]corev1.VolumeMount, error) {
 	workerMounts := make([]corev1.VolumeMount, 0)
 	mountsByName := make(map[string]corev1.VolumeMount)
 	bindingNames := make(map[string]bool)
@@ -225,24 +244,49 @@ func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.Volu
 		}
 	}
 
-	inputRoutes := make([]storage.InputRoute, 0, len(storageConfig.MountedInputs))
-	for _, input := range storageConfig.MountedInputs {
-		if input == nil {
-			return nil, nil, fmt.Errorf("Kubernetes.Storage.MountedInputs contains a nil entry")
+	return workerMounts, mountsByName, nil
+}
+
+func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByName map[string]corev1.VolumeMount) ([]storage.S3ReadMount, error) {
+	readMounts := make([]storage.S3ReadMount, 0)
+	for _, backend := range backends {
+		if backend == nil || backend.MountedRead == nil {
+			continue
 		}
-		if len(validation.IsDNS1123Label(input.WorkerMount)) != 0 {
-			return nil, nil, fmt.Errorf("mounted input %q has invalid worker mount reference %q", input.URLPrefix, input.WorkerMount)
+		if !backend.Valid() {
+			return nil, fmt.Errorf("S3 mounted read backend %q is disabled or invalid", backend.Bucket)
 		}
-		mount, exists := mountsByName[input.WorkerMount]
+		if backend.Bucket == "" {
+			return nil, fmt.Errorf("S3 mounted read requires a bucket")
+		}
+		matches := 0
+		for _, candidate := range backends {
+			if candidate != nil && candidate.Valid() && candidate.Endpoint == backend.Endpoint && candidate.Bucket == backend.Bucket {
+				matches++
+			}
+		}
+		if matches > 1 {
+			return nil, fmt.Errorf("duplicate mounted S3 backend %q bucket %q", backend.Endpoint, backend.Bucket)
+		}
+		workerMount := backend.MountedRead.WorkerMount
+		if len(validation.IsDNS1123Label(workerMount)) != 0 {
+			return nil, fmt.Errorf("S3 mounted read has invalid worker mount reference %q", workerMount)
+		}
+		mount, exists := mountsByName[workerMount]
 		if !exists {
-			return nil, nil, fmt.Errorf("mounted input %q references unknown worker mount %q", input.URLPrefix, input.WorkerMount)
+			return nil, fmt.Errorf("S3 mounted read references unknown worker mount %q", workerMount)
 		}
-		inputRoutes = append(inputRoutes, storage.InputRoute{URLPrefix: input.URLPrefix, Root: mount.MountPath})
+		readMounts = append(readMounts, storage.S3ReadMount{
+			Endpoint: backend.Endpoint,
+			Bucket:   backend.Bucket,
+			Prefix:   backend.MountedRead.Prefix,
+			Root:     mount.MountPath,
+		})
 	}
-	if err := storage.ValidateInputRoutes(inputRoutes); err != nil {
-		return nil, nil, fmt.Errorf("Kubernetes.Storage.MountedInputs: %w", err)
+	if err := storage.ValidateS3ReadMounts(readMounts); err != nil {
+		return nil, fmt.Errorf("GenericS3 mounted reads: %w", err)
 	}
-	return workerMounts, inputRoutes, nil
+	return readMounts, nil
 }
 
 func render(raw string, data map[string]interface{}, target interface{}) error {
@@ -393,12 +437,12 @@ func (p *Plan) validate() error {
 		paths = append(paths, mount.MountPath)
 		mountRoots[mount.MountPath] = true
 	}
-	if err := storage.ValidateInputRoutes(p.InputRoutes); err != nil {
-		return fmt.Errorf("invalid storage input routes: %w", err)
+	if err := storage.ValidateS3ReadMounts(p.S3ReadMounts); err != nil {
+		return fmt.Errorf("invalid S3 read mounts: %w", err)
 	}
-	for _, route := range p.InputRoutes {
-		if !mountRoots[route.Root] {
-			return fmt.Errorf("mounted input root %q does not match an explicit worker mount", route.Root)
+	for _, readMount := range p.S3ReadMounts {
+		if !mountRoots[readMount.Root] {
+			return fmt.Errorf("S3 mounted read root %q does not match an explicit worker mount", readMount.Root)
 		}
 	}
 	return nil

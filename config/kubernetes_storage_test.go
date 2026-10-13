@@ -34,9 +34,14 @@ Kubernetes:
           PV: |-
             apiVersion: v1
             kind: PersistentVolume
-    MountedInputs:
-      - URLPrefix: s3://bucket/prefix/
-        WorkerMount: input-view
+GenericS3:
+  - Endpoint: https://s3.example.test
+    Key: access
+    Secret: secret
+    Bucket: bucket
+    MountedRead:
+      WorkerMount: input-view
+      Prefix: prefix/
 `)
 
 	got := EmptyConfig()
@@ -45,12 +50,21 @@ Kubernetes:
 	}
 
 	want := &Config{
+		GenericS3: []*GenericS3Storage{{
+			Endpoint: "https://s3.example.test",
+			Key:      "access",
+			Secret:   "secret",
+			Bucket:   "bucket",
+			MountedRead: &S3MountedRead{
+				WorkerMount: "input-view",
+				Prefix:      "prefix/",
+			},
+		}},
 		Kubernetes: &Kubernetes{
 			Storage: &KubernetesStorage{
 				WorkspaceVolume:   "shared",
 				WorkerContainer:   "funnel-worker",
 				ExecutorContainer: "funnel-executor",
-				MountedInputs:     []*KubernetesMountedInput{{URLPrefix: "s3://bucket/prefix/", WorkerMount: "input-view"}},
 				Bindings: []*KubernetesStorageBinding{
 					{
 						Name:         "shared-inputs",
@@ -163,9 +177,26 @@ func TestKubernetesSchemaFieldCompatibility(t *testing.T) {
 	if !configDescriptor.ReservedRanges().Has(34) || !configDescriptor.ReservedNames().Has("MountedInputs") {
 		t.Fatal("Config.MountedInputs field 34 must be reserved")
 	}
-	storageFields := (&KubernetesStorage{}).ProtoReflect().Descriptor().Fields()
-	if field := storageFields.ByName("MountedInputs"); field == nil || field.Number() != 5 {
-		t.Fatalf("KubernetesStorage.MountedInputs field = %v, want 5", field)
+	storageDescriptor := (&KubernetesStorage{}).ProtoReflect().Descriptor()
+	if storageDescriptor.Fields().ByName("MountedInputs") != nil {
+		t.Fatal("KubernetesStorage.MountedInputs must be removed")
+	}
+	if !storageDescriptor.ReservedRanges().Has(5) || !storageDescriptor.ReservedNames().Has("MountedInputs") {
+		t.Fatal("KubernetesStorage.MountedInputs field 5 must be reserved")
+	}
+	s3MountedRead := (&GenericS3Storage{}).ProtoReflect().Descriptor().Fields().ByName("MountedRead")
+	if s3MountedRead == nil || s3MountedRead.Number() != 9 || s3MountedRead.Kind() != protoreflect.MessageKind {
+		t.Fatalf("GenericS3Storage.MountedRead field = %v, want optional message field 9", s3MountedRead)
+	}
+	readFields := (&S3MountedRead{}).ProtoReflect().Descriptor().Fields()
+	if field := readFields.ByName("WorkerMount"); field == nil || field.Number() != 1 {
+		t.Fatalf("S3MountedRead.WorkerMount field = %v, want 1", field)
+	}
+	if field := readFields.ByName("Prefix"); field == nil || field.Number() != 2 {
+		t.Fatalf("S3MountedRead.Prefix field = %v, want 2", field)
+	}
+	if configDescriptor.ParentFile().Messages().ByName("KubernetesMountedInput") != nil {
+		t.Fatal("KubernetesMountedInput message must be removed")
 	}
 	bindingDescriptor := (&KubernetesStorageBinding{}).ProtoReflect().Descriptor()
 	if field := bindingDescriptor.Fields().ByName("WorkerMounts"); field == nil || field.Number() != 5 {

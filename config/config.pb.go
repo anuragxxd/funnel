@@ -2426,7 +2426,8 @@ type GenericS3Storage struct {
 	KmsKeyID string                 `protobuf:"bytes,7,opt,name=KmsKeyID,proto3" json:"KmsKeyID,omitempty"`
 	// AWS Account ID, needed for S3 CSI Driver
 	// https://github.com/awslabs/mountpoint-s3/blob/v1.20.0/doc/CONFIGURATION.md#data-encryption
-	AccountID     string `protobuf:"bytes,8,opt,name=AccountID,proto3" json:"AccountID,omitempty"`
+	AccountID     string         `protobuf:"bytes,8,opt,name=AccountID,proto3" json:"AccountID,omitempty"`
+	MountedRead   *S3MountedRead `protobuf:"bytes,9,opt,name=MountedRead,proto3" json:"MountedRead,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2517,6 +2518,67 @@ func (x *GenericS3Storage) GetAccountID() string {
 	return ""
 }
 
+func (x *GenericS3Storage) GetMountedRead() *S3MountedRead {
+	if x != nil {
+		return x.MountedRead
+	}
+	return nil
+}
+
+// S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker.
+type S3MountedRead struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	WorkerMount string                 `protobuf:"bytes,1,opt,name=WorkerMount,proto3" json:"WorkerMount,omitempty"`
+	// Prefix is bucket-relative. An empty prefix mounts the whole bucket.
+	Prefix        string `protobuf:"bytes,2,opt,name=Prefix,proto3" json:"Prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *S3MountedRead) Reset() {
+	*x = S3MountedRead{}
+	mi := &file_config_config_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3MountedRead) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3MountedRead) ProtoMessage() {}
+
+func (x *S3MountedRead) ProtoReflect() protoreflect.Message {
+	mi := &file_config_config_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3MountedRead.ProtoReflect.Descriptor instead.
+func (*S3MountedRead) Descriptor() ([]byte, []int) {
+	return file_config_config_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *S3MountedRead) GetWorkerMount() string {
+	if x != nil {
+		return x.WorkerMount
+	}
+	return ""
+}
+
+func (x *S3MountedRead) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
 // SwiftStorage configures the OpenStack Swift object storage backend.
 type SwiftStorage struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -2535,7 +2597,7 @@ type SwiftStorage struct {
 
 func (x *SwiftStorage) Reset() {
 	*x = SwiftStorage{}
-	mi := &file_config_config_proto_msgTypes[31]
+	mi := &file_config_config_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2547,7 +2609,7 @@ func (x *SwiftStorage) String() string {
 func (*SwiftStorage) ProtoMessage() {}
 
 func (x *SwiftStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[31]
+	mi := &file_config_config_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2560,7 +2622,7 @@ func (x *SwiftStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwiftStorage.ProtoReflect.Descriptor instead.
 func (*SwiftStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{31}
+	return file_config_config_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SwiftStorage) GetDisabled() bool {
@@ -2637,7 +2699,7 @@ type HTTPStorage struct {
 
 func (x *HTTPStorage) Reset() {
 	*x = HTTPStorage{}
-	mi := &file_config_config_proto_msgTypes[32]
+	mi := &file_config_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2649,7 +2711,7 @@ func (x *HTTPStorage) String() string {
 func (*HTTPStorage) ProtoMessage() {}
 
 func (x *HTTPStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[32]
+	mi := &file_config_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2662,7 +2724,7 @@ func (x *HTTPStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HTTPStorage.ProtoReflect.Descriptor instead.
 func (*HTTPStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{32}
+	return file_config_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *HTTPStorage) GetDisabled() bool {
@@ -2692,7 +2754,7 @@ type FTPStorage struct {
 
 func (x *FTPStorage) Reset() {
 	*x = FTPStorage{}
-	mi := &file_config_config_proto_msgTypes[33]
+	mi := &file_config_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2704,7 +2766,7 @@ func (x *FTPStorage) String() string {
 func (*FTPStorage) ProtoMessage() {}
 
 func (x *FTPStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[33]
+	mi := &file_config_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2717,7 +2779,7 @@ func (x *FTPStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FTPStorage.ProtoReflect.Descriptor instead.
 func (*FTPStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{33}
+	return file_config_config_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *FTPStorage) GetDisabled() bool {
@@ -2791,7 +2853,7 @@ type Kubernetes struct {
 
 func (x *Kubernetes) Reset() {
 	*x = Kubernetes{}
-	mi := &file_config_config_proto_msgTypes[34]
+	mi := &file_config_config_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2803,7 +2865,7 @@ func (x *Kubernetes) String() string {
 func (*Kubernetes) ProtoMessage() {}
 
 func (x *Kubernetes) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[34]
+	mi := &file_config_config_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2816,7 +2878,7 @@ func (x *Kubernetes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Kubernetes.ProtoReflect.Descriptor instead.
 func (*Kubernetes) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{34}
+	return file_config_config_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *Kubernetes) GetExecutor() string {
@@ -2988,15 +3050,13 @@ type KubernetesStorage struct {
 	// mounts. It may be empty when the pod has one regular
 	// container; set it when the pod has multiple regular containers.
 	ExecutorContainer string `protobuf:"bytes,4,opt,name=ExecutorContainer,proto3" json:"ExecutorContainer,omitempty"`
-	// MountedInputs maps S3 prefixes to named worker mount views.
-	MountedInputs []*KubernetesMountedInput `protobuf:"bytes,5,rep,name=MountedInputs,proto3" json:"MountedInputs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *KubernetesStorage) Reset() {
 	*x = KubernetesStorage{}
-	mi := &file_config_config_proto_msgTypes[35]
+	mi := &file_config_config_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3008,7 +3068,7 @@ func (x *KubernetesStorage) String() string {
 func (*KubernetesStorage) ProtoMessage() {}
 
 func (x *KubernetesStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[35]
+	mi := &file_config_config_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3021,7 +3081,7 @@ func (x *KubernetesStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesStorage.ProtoReflect.Descriptor instead.
 func (*KubernetesStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{35}
+	return file_config_config_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *KubernetesStorage) GetWorkspaceVolume() string {
@@ -3048,66 +3108,6 @@ func (x *KubernetesStorage) GetWorkerContainer() string {
 func (x *KubernetesStorage) GetExecutorContainer() string {
 	if x != nil {
 		return x.ExecutorContainer
-	}
-	return ""
-}
-
-func (x *KubernetesStorage) GetMountedInputs() []*KubernetesMountedInput {
-	if x != nil {
-		return x.MountedInputs
-	}
-	return nil
-}
-
-// KubernetesMountedInput maps an S3 prefix to an explicitly named worker mount.
-type KubernetesMountedInput struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	URLPrefix     string                 `protobuf:"bytes,1,opt,name=URLPrefix,proto3" json:"URLPrefix,omitempty"`
-	WorkerMount   string                 `protobuf:"bytes,2,opt,name=WorkerMount,proto3" json:"WorkerMount,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *KubernetesMountedInput) Reset() {
-	*x = KubernetesMountedInput{}
-	mi := &file_config_config_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *KubernetesMountedInput) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*KubernetesMountedInput) ProtoMessage() {}
-
-func (x *KubernetesMountedInput) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use KubernetesMountedInput.ProtoReflect.Descriptor instead.
-func (*KubernetesMountedInput) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *KubernetesMountedInput) GetURLPrefix() string {
-	if x != nil {
-		return x.URLPrefix
-	}
-	return ""
-}
-
-func (x *KubernetesMountedInput) GetWorkerMount() string {
-	if x != nil {
-		return x.WorkerMount
 	}
 	return ""
 }
@@ -3800,7 +3800,7 @@ const file_config_config_proto_rawDesc = "" +
 	"\x0fAmazonS3Storage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1d\n" +
 	"\x03SSE\x18\x02 \x01(\v2\v.config.SSER\x03SSE\x12/\n" +
-	"\tAWSConfig\x18\x03 \x01(\v2\x11.config.AWSConfigR\tAWSConfig\"\xde\x01\n" +
+	"\tAWSConfig\x18\x03 \x01(\v2\x11.config.AWSConfigR\tAWSConfig\"\x97\x02\n" +
 	"\x10GenericS3Storage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1a\n" +
 	"\bEndpoint\x18\x02 \x01(\tR\bEndpoint\x12\x10\n" +
@@ -3809,7 +3809,11 @@ const file_config_config_proto_rawDesc = "" +
 	"\x06Region\x18\x05 \x01(\tR\x06Region\x12\x16\n" +
 	"\x06Bucket\x18\x06 \x01(\tR\x06Bucket\x12\x1a\n" +
 	"\bKmsKeyID\x18\a \x01(\tR\bKmsKeyID\x12\x1c\n" +
-	"\tAccountID\x18\b \x01(\tR\tAccountID\"\xa0\x02\n" +
+	"\tAccountID\x18\b \x01(\tR\tAccountID\x127\n" +
+	"\vMountedRead\x18\t \x01(\v2\x15.config.S3MountedReadR\vMountedRead\"I\n" +
+	"\rS3MountedRead\x12 \n" +
+	"\vWorkerMount\x18\x01 \x01(\tR\vWorkerMount\x12\x16\n" +
+	"\x06Prefix\x18\x02 \x01(\tR\x06Prefix\"\xa0\x02\n" +
 	"\fSwiftStorage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1a\n" +
 	"\bUserName\x18\x02 \x01(\tR\bUserName\x12\x1a\n" +
@@ -3864,16 +3868,12 @@ const file_config_config_proto_rawDesc = "" +
 	"\aStorage\x18\x19 \x01(\v2\x19.config.KubernetesStorageR\aStorage\x1a?\n" +
 	"\x11NodeSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x15\x10\x18R\aPVCModeR\x10StorageClassNameR\rSharedPVCNameR\x13S3FilesFilesystemId\"\x99\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x15\x10\x18R\aPVCModeR\x10StorageClassNameR\rSharedPVCNameR\x13S3FilesFilesystemId\"\xe8\x01\n" +
 	"\x11KubernetesStorage\x12(\n" +
 	"\x0fWorkspaceVolume\x18\x01 \x01(\tR\x0fWorkspaceVolume\x12<\n" +
 	"\bBindings\x18\x02 \x03(\v2 .config.KubernetesStorageBindingR\bBindings\x12(\n" +
 	"\x0fWorkerContainer\x18\x03 \x01(\tR\x0fWorkerContainer\x12,\n" +
-	"\x11ExecutorContainer\x18\x04 \x01(\tR\x11ExecutorContainer\x12D\n" +
-	"\rMountedInputs\x18\x05 \x03(\v2\x1e.config.KubernetesMountedInputR\rMountedInputs\"X\n" +
-	"\x16KubernetesMountedInput\x12\x1c\n" +
-	"\tURLPrefix\x18\x01 \x01(\tR\tURLPrefix\x12 \n" +
-	"\vWorkerMount\x18\x02 \x01(\tR\vWorkerMount\"\xed\x01\n" +
+	"\x11ExecutorContainer\x18\x04 \x01(\tR\x11ExecutorContainerJ\x04\b\x05\x10\x06R\rMountedInputs\"\xed\x01\n" +
 	"\x18KubernetesStorageBinding\x12\x12\n" +
 	"\x04Name\x18\x01 \x01(\tR\x04Name\x12&\n" +
 	"\rExistingClaim\x18\x02 \x01(\tH\x00R\rExistingClaim\x12B\n" +
@@ -3951,12 +3951,12 @@ var file_config_config_proto_goTypes = []any{
 	(*SSE)(nil),                        // 28: config.SSE
 	(*AmazonS3Storage)(nil),            // 29: config.AmazonS3Storage
 	(*GenericS3Storage)(nil),           // 30: config.GenericS3Storage
-	(*SwiftStorage)(nil),               // 31: config.SwiftStorage
-	(*HTTPStorage)(nil),                // 32: config.HTTPStorage
-	(*FTPStorage)(nil),                 // 33: config.FTPStorage
-	(*Kubernetes)(nil),                 // 34: config.Kubernetes
-	(*KubernetesStorage)(nil),          // 35: config.KubernetesStorage
-	(*KubernetesMountedInput)(nil),     // 36: config.KubernetesMountedInput
+	(*S3MountedRead)(nil),              // 31: config.S3MountedRead
+	(*SwiftStorage)(nil),               // 32: config.SwiftStorage
+	(*HTTPStorage)(nil),                // 33: config.HTTPStorage
+	(*FTPStorage)(nil),                 // 34: config.FTPStorage
+	(*Kubernetes)(nil),                 // 35: config.Kubernetes
+	(*KubernetesStorage)(nil),          // 36: config.KubernetesStorage
 	(*KubernetesStorageBinding)(nil),   // 37: config.KubernetesStorageBinding
 	(*KubernetesWorkerMount)(nil),      // 38: config.KubernetesWorkerMount
 	(*KubernetesStorageTemplates)(nil), // 39: config.KubernetesStorageTemplates
@@ -3993,15 +3993,15 @@ var file_config_config_proto_depIdxs = []int32{
 	13, // 17: config.Config.PBS:type_name -> config.HPCBackend
 	0,  // 18: config.Config.GridEngine:type_name -> config.GridEngine
 	22, // 19: config.Config.AWSBatch:type_name -> config.AWSBatch
-	34, // 20: config.Config.Kubernetes:type_name -> config.Kubernetes
+	35, // 20: config.Config.Kubernetes:type_name -> config.Kubernetes
 	23, // 21: config.Config.GCPBatch:type_name -> config.GCPBatch
 	26, // 22: config.Config.LocalStorage:type_name -> config.LocalStorage
 	29, // 23: config.Config.AmazonS3:type_name -> config.AmazonS3Storage
 	30, // 24: config.Config.GenericS3:type_name -> config.GenericS3Storage
 	27, // 25: config.Config.GoogleStorage:type_name -> config.GoogleCloudStorage
-	31, // 26: config.Config.Swift:type_name -> config.SwiftStorage
-	32, // 27: config.Config.HTTPStorage:type_name -> config.HTTPStorage
-	33, // 28: config.Config.FTPStorage:type_name -> config.FTPStorage
+	32, // 26: config.Config.Swift:type_name -> config.SwiftStorage
+	33, // 27: config.Config.HTTPStorage:type_name -> config.HTTPStorage
+	34, // 28: config.Config.FTPStorage:type_name -> config.FTPStorage
 	2,  // 29: config.Config.Plugins:type_name -> config.Plugins
 	44, // 30: config.Plugins.Params:type_name -> config.Plugins.ParamsEntry
 	50, // 31: config.TimeoutConfig.duration:type_name -> google.protobuf.Duration
@@ -4032,16 +4032,16 @@ var file_config_config_proto_depIdxs = []int32{
 	21, // 56: config.DynamoDB.AWSConfig:type_name -> config.AWSConfig
 	28, // 57: config.AmazonS3Storage.SSE:type_name -> config.SSE
 	21, // 58: config.AmazonS3Storage.AWSConfig:type_name -> config.AWSConfig
-	5,  // 59: config.HTTPStorage.Timeout:type_name -> config.TimeoutConfig
-	5,  // 60: config.FTPStorage.Timeout:type_name -> config.TimeoutConfig
-	50, // 61: config.Kubernetes.ReconcileRate:type_name -> google.protobuf.Duration
-	48, // 62: config.Kubernetes.NodeSelector:type_name -> config.Kubernetes.NodeSelectorEntry
-	43, // 63: config.Kubernetes.Tolerations:type_name -> config.Toleration
-	40, // 64: config.Kubernetes.Resources:type_name -> config.KubernetesResources
-	5,  // 65: config.Kubernetes.Timeout:type_name -> config.TimeoutConfig
-	35, // 66: config.Kubernetes.Storage:type_name -> config.KubernetesStorage
-	37, // 67: config.KubernetesStorage.Bindings:type_name -> config.KubernetesStorageBinding
-	36, // 68: config.KubernetesStorage.MountedInputs:type_name -> config.KubernetesMountedInput
+	31, // 59: config.GenericS3Storage.MountedRead:type_name -> config.S3MountedRead
+	5,  // 60: config.HTTPStorage.Timeout:type_name -> config.TimeoutConfig
+	5,  // 61: config.FTPStorage.Timeout:type_name -> config.TimeoutConfig
+	50, // 62: config.Kubernetes.ReconcileRate:type_name -> google.protobuf.Duration
+	48, // 63: config.Kubernetes.NodeSelector:type_name -> config.Kubernetes.NodeSelectorEntry
+	43, // 64: config.Kubernetes.Tolerations:type_name -> config.Toleration
+	40, // 65: config.Kubernetes.Resources:type_name -> config.KubernetesResources
+	5,  // 66: config.Kubernetes.Timeout:type_name -> config.TimeoutConfig
+	36, // 67: config.Kubernetes.Storage:type_name -> config.KubernetesStorage
+	37, // 68: config.KubernetesStorage.Bindings:type_name -> config.KubernetesStorageBinding
 	39, // 69: config.KubernetesStorageBinding.Templates:type_name -> config.KubernetesStorageTemplates
 	38, // 70: config.KubernetesStorageBinding.WorkerMounts:type_name -> config.KubernetesWorkerMount
 	41, // 71: config.KubernetesResources.Defaults:type_name -> config.ResourceDefaults

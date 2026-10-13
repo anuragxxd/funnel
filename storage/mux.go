@@ -95,6 +95,40 @@ func NewMux(conf *config.Config) (*Mux, error) {
 	return mux, nil
 }
 
+// NewWorkerMux activates only the S3 read mounts captured in the submitted plan.
+// NewMux leaves local reads disabled for server-side validation.
+func NewWorkerMux(conf *config.Config, mounts []S3ReadMount) (*Mux, error) {
+	if err := ValidateS3ReadMounts(mounts); err != nil {
+		return nil, err
+	}
+	mux, err := NewMux(conf)
+	if err != nil {
+		return nil, err
+	}
+	for _, mount := range mounts {
+		var target *GenericS3
+		for _, backend := range mux.Backends {
+			s3, ok := backend.(*GenericS3)
+			if !ok || s3.configuredEndpoint != mount.Endpoint || s3.bucket != mount.Bucket {
+				continue
+			}
+			if target != nil {
+				return nil, fmt.Errorf("ambiguous mounted S3 backend %q bucket %q", mount.Endpoint, mount.Bucket)
+			}
+			target = s3
+		}
+		if target == nil {
+			return nil, fmt.Errorf("submitted mounted S3 backend %q bucket %q is unavailable", mount.Endpoint, mount.Bucket)
+		}
+		reader, err := newMountedS3Reader(mount)
+		if err != nil {
+			return nil, err
+		}
+		target.mountedRead = reader
+	}
+	return mux, nil
+}
+
 // Stat returns information about the object at the given storage URL.
 func (mux *Mux) Stat(ctx context.Context, url string) (*Object, error) {
 	backend, err := mux.findBackend(url, statOp)
@@ -190,6 +224,27 @@ func (mux *Mux) AttachLogger(log *logger.Logger) {
 }
 
 func (mux *Mux) findBackend(url string, op operation) (Storage, error) {
+	// Mounted reads have an explicit backend owner and need no API discovery.
+	if op == getOp || op == statOp || op == listOp {
+		var owner *GenericS3
+		for _, backend := range mux.Backends {
+			s3, ok := backend.(*GenericS3)
+			if !ok {
+				continue
+			}
+			if _, matched := s3.mountedURL(url); !matched {
+				continue
+			}
+			if owner != nil {
+				return nil, fmt.Errorf("request supported by multiple mounted S3 backends for: %s", url)
+			}
+			owner = s3
+		}
+		if owner != nil {
+			return owner, nil
+		}
+	}
+
 	var found = 0
 	var useBackend Storage
 	var err error

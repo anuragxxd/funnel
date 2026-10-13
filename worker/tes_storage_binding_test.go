@@ -43,8 +43,10 @@ func TestTESRequestStagesIdenticallyAcrossStorageBindings(t *testing.T) {
 					{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: deployment + "-workspace"}},
 					{Name: "reference", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: deployment + "-reference"}, WorkerMounts: []*config.KubernetesWorkerMount{{Name: "reference-view", Mount: fmt.Sprintf("mountPath: %q\nsubPath: release-1\nreadOnly: true", mountRoot)}}},
 				},
-				MountedInputs: []*config.KubernetesMountedInput{{URLPrefix: "s3://reference", WorkerMount: "reference-view"}},
 			}
+			conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "reference", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{WorkerMount: "reference-view"}}}
+			conf.AmazonS3.Disabled = true
+			conf.GoogleStorage.Disabled = true
 			plan, err := storageplan.Resolve(task, conf)
 			if err != nil {
 				t.Fatal(err)
@@ -57,7 +59,7 @@ func TestTESRequestStagesIdenticallyAcrossStorageBindings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store, err := storage.WithMountedInputs(&storage.Mux{}, submitted.InputRoutes)
+			store, err := storage.NewWorkerMux(conf, submitted.S3ReadMounts)
 			if err != nil {
 				t.Fatal(err)
 			}

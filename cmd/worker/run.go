@@ -68,7 +68,7 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 	}
 
 	// The executor always defaults to docker, unless explicitly set to kubernetes.
-	var inputRoutes []storage.InputRoute
+	var readMounts []storage.S3ReadMount
 	var executor = worker.Executor{
 		Backend: "docker",
 	}
@@ -89,7 +89,7 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 			}
 			conf = googleproto.Clone(conf).(*config.Config)
 			conf.Worker.WorkDir = plan.WorkDir
-			inputRoutes = plan.InputRoutes
+			readMounts = plan.S3ReadMounts
 			executor.StoragePlan = plan
 			executor.JobsNamespace = plan.Namespace
 		} else if conf.Kubernetes.Storage != nil {
@@ -98,24 +98,23 @@ func NewWorker(ctx context.Context, conf *config.Config, log *logger.Logger, opt
 
 	}
 
-	// Resolve the submitted configuration before constructing worker-only storage.
-	mux, err := storage.NewMux(conf)
-	if err != nil {
-		return nil, fmt.Errorf("creating storage backend: %w", err)
-	}
-	mux.AttachLogger(log)
-	var store storage.Storage = mux
-	if len(inputRoutes) > 0 {
-		store, err = storage.WithMountedInputs(mux, inputRoutes)
-		if err != nil {
-			return nil, fmt.Errorf("configuring mounted inputs: %w", err)
+	if executor.StoragePlan == nil {
+		for _, backend := range conf.GenericS3 {
+			if backend != nil && backend.MountedRead != nil {
+				return nil, fmt.Errorf("GenericS3.MountedRead requires a submitted Kubernetes storage plan")
+			}
 		}
 	}
+	mux, err := storage.NewWorkerMux(conf, readMounts)
+	if err != nil {
+		return nil, fmt.Errorf("creating worker storage backend: %w", err)
+	}
+	mux.AttachLogger(log)
 
 	return &worker.DefaultWorker{
 		Executor:    executor,
 		Conf:        conf.Worker,
-		Store:       store,
+		Store:       mux,
 		TaskReader:  reader,
 		EventWriter: writer,
 	}, nil

@@ -405,6 +405,9 @@
         "AccountID": {
           "type": "string",
           "title": "AWS Account ID, needed for S3 CSI Driver\nhttps://github.com/awslabs/mountpoint-s3/blob/v1.20.0/doc/CONFIGURATION.md#data-encryption"
+        },
+        "MountedRead": {
+          "$ref": "#/definitions/configS3MountedRead"
         }
       },
       "description": "GenericS3Storage describes the configuration for the Generic S3 storage backend."
@@ -565,18 +568,6 @@
       },
       "description": "Kubernetes describes the configuration for the Kubernetes compute backend."
     },
-    "configKubernetesMountedInput": {
-      "type": "object",
-      "properties": {
-        "URLPrefix": {
-          "type": "string"
-        },
-        "WorkerMount": {
-          "type": "string"
-        }
-      },
-      "description": "KubernetesMountedInput maps an S3 prefix to an explicitly named worker mount."
-    },
     "configKubernetesResources": {
       "type": "object",
       "properties": {
@@ -609,14 +600,6 @@
         "ExecutorContainer": {
           "type": "string",
           "description": "ExecutorContainer selects the executor container receiving generated\nmounts. It may be empty when the pod has one regular\ncontainer; set it when the pod has multiple regular containers."
-        },
-        "MountedInputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/configKubernetesMountedInput"
-          },
-          "description": "MountedInputs maps S3 prefixes to named worker mount views."
         }
       },
       "description": "KubernetesStorage describes named volume bindings shared by the worker and\nits executor pods. Each binding selects either an existing claim or native\nYAML templates for a per-task PVC and optional PV."
@@ -884,6 +867,19 @@
         }
       },
       "description": "Resources describes the CPU, RAM, and disk resources required by a task."
+    },
+    "configS3MountedRead": {
+      "type": "object",
+      "properties": {
+        "WorkerMount": {
+          "type": "string"
+        },
+        "Prefix": {
+          "type": "string",
+          "description": "Prefix is bucket-relative. An empty prefix mounts the whole bucket."
+        }
+      },
+      "description": "S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker."
     },
     "configSSE": {
       "type": "object",

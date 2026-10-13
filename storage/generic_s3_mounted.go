@@ -12,59 +12,50 @@ import (
 	"strings"
 )
 
-// MountedInputs overrides reads for explicit mounts. Writes and URL joins always
-// use the configured storage backend, so local files cannot prove publication.
-type MountedInputs struct {
-	Storage
-	mounts []inputMount
+// S3ReadMount records a worker mount resolved for one S3 backend.
+// Credentials remain in worker configuration, outside the submitted plan.
+type S3ReadMount struct {
+	Endpoint string
+	Bucket   string
+	Prefix   string
+	Root     string
 }
 
-type InputRoute struct {
-	URLPrefix string
-	Root      string
-}
-
-type inputMount struct {
+type mountedS3Reader struct {
 	prefix string
 	root   string
 }
 
-// WithMountedInputs configures worker-local reads without changing server storage.
-// Mount directories are opened on access, after Kubernetes has mounted them.
-func WithMountedInputs(backend Storage, routes []InputRoute) (*MountedInputs, error) {
-	if backend == nil {
-		return nil, errors.New("mounted inputs require a fallback storage backend")
+func ValidateS3ReadMounts(mounts []S3ReadMount) error {
+	seen := make(map[string]bool, len(mounts))
+	for _, mount := range mounts {
+		if mount.Endpoint == "" || mount.Bucket == "" || strings.ContainsAny(mount.Bucket, "/@?#\\ \x00") {
+			return fmt.Errorf("mounted S3 reads require an endpoint and bucket")
+		}
+		if strings.HasPrefix(mount.Prefix, "/") {
+			return fmt.Errorf("mounted S3 prefix %q must be bucket-relative", mount.Prefix)
+		}
+		if err := validateInputURL("s3://" + mount.Bucket + "/" + mount.Prefix); err != nil {
+			return err
+		}
+		if !filepath.IsAbs(mount.Root) || filepath.Clean(mount.Root) != mount.Root {
+			return fmt.Errorf("mounted S3 root %q must be absolute and clean", mount.Root)
+		}
+		identity := mount.Endpoint + "\x00" + mount.Bucket
+		if seen[identity] {
+			return fmt.Errorf("duplicate mounted S3 backend %q bucket %q", mount.Endpoint, mount.Bucket)
+		}
+		seen[identity] = true
 	}
-	mounts, err := resolveInputMounts(routes)
-	if err != nil {
+	return nil
+}
+
+func newMountedS3Reader(mount S3ReadMount) (*mountedS3Reader, error) {
+	if err := ValidateS3ReadMounts([]S3ReadMount{mount}); err != nil {
 		return nil, err
 	}
-	return &MountedInputs{Storage: backend, mounts: mounts}, nil
-}
-
-func ValidateInputRoutes(routes []InputRoute) error {
-	_, err := resolveInputMounts(routes)
-	return err
-}
-
-func resolveInputMounts(routes []InputRoute) ([]inputMount, error) {
-	mounts := make([]inputMount, 0, len(routes))
-	for _, route := range routes {
-		if err := validateInputURL(route.URLPrefix); err != nil {
-			return nil, fmt.Errorf("mounted input prefix: %w", err)
-		}
-		if !filepath.IsAbs(route.Root) || filepath.Clean(route.Root) != route.Root {
-			return nil, fmt.Errorf("mounted input root %q must be absolute and clean", route.Root)
-		}
-		prefix := strings.TrimSuffix(route.URLPrefix, "/")
-		for _, existing := range mounts {
-			if inputPrefix(prefix, existing.prefix) || inputPrefix(existing.prefix, prefix) {
-				return nil, fmt.Errorf("overlapping mounted input prefixes %q and %q", route.URLPrefix, existing.prefix)
-			}
-		}
-		mounts = append(mounts, inputMount{prefix: prefix, root: route.Root})
-	}
-	return mounts, nil
+	prefix := strings.TrimSuffix("s3://"+mount.Bucket+"/"+mount.Prefix, "/")
+	return &mountedS3Reader{prefix: prefix, root: mount.Root}, nil
 }
 
 // Funnel's S3 backends use literal keys, including spaces, #, and percent signs.
@@ -100,40 +91,33 @@ func inputPrefix(value, prefix string) bool {
 	return value == prefix || strings.HasPrefix(value, prefix+"/")
 }
 
-func (s *MountedInputs) resolve(raw string) (*inputMount, string, error) {
-	for i := range s.mounts {
-		m := &s.mounts[i]
-		if !inputPrefix(strings.TrimSuffix(raw, "/"), m.prefix) {
-			continue
-		}
-		if err := validateInputURL(raw); err != nil {
-			return nil, "", err
-		}
-		rel := strings.TrimPrefix(strings.TrimPrefix(raw, m.prefix), "/")
-		if rel == "" {
-			rel = "."
-		}
-		return m, strings.TrimSuffix(rel, "/"), nil
+func (s *mountedS3Reader) resolve(raw string) (string, error) {
+	if !inputPrefix(strings.TrimSuffix(raw, "/"), s.prefix) {
+		return "", fmt.Errorf("URL %q is outside mounted S3 prefix", raw)
 	}
-	return nil, "", nil
+	if err := validateInputURL(raw); err != nil {
+		return "", err
+	}
+	rel := strings.TrimPrefix(strings.TrimPrefix(raw, s.prefix), "/")
+	if rel == "" {
+		rel = "."
+	}
+	return strings.TrimSuffix(rel, "/"), nil
 }
 
 func mountedObject(raw string, info fs.FileInfo) *Object {
 	return &Object{URL: raw, Name: info.Name(), Size: info.Size(), LastModified: info.ModTime()}
 }
 
-func (s *MountedInputs) Stat(ctx context.Context, raw string) (*Object, error) {
-	m, rel, err := s.resolve(raw)
+func (s *mountedS3Reader) Stat(ctx context.Context, raw string) (*Object, error) {
+	rel, err := s.resolve(raw)
 	if err != nil {
 		return nil, err
-	}
-	if m == nil {
-		return s.Storage.Stat(ctx, raw)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(m.root)
+	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return nil, fmt.Errorf("open mounted input root: %w", err)
 	}
@@ -148,18 +132,15 @@ func (s *MountedInputs) Stat(ctx context.Context, raw string) (*Object, error) {
 	return mountedObject(raw, info), nil
 }
 
-func (s *MountedInputs) List(ctx context.Context, raw string) ([]*Object, error) {
-	m, rel, err := s.resolve(raw)
+func (s *mountedS3Reader) List(ctx context.Context, raw string) ([]*Object, error) {
+	rel, err := s.resolve(raw)
 	if err != nil {
 		return nil, err
-	}
-	if m == nil {
-		return s.Storage.List(ctx, raw)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(m.root)
+	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return nil, fmt.Errorf("open mounted input root: %w", err)
 	}
@@ -189,7 +170,7 @@ func (s *MountedInputs) List(ctx context.Context, raw string) ([]*Object, error)
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("mounted directory entry %q is not a regular file", name)
 		}
-		fileURL := m.prefix + "/" + name
+		fileURL := s.prefix + "/" + name
 		objects = append(objects, mountedObject(fileURL, info))
 		return nil
 	})
@@ -199,18 +180,15 @@ func (s *MountedInputs) List(ctx context.Context, raw string) ([]*Object, error)
 	return objects, nil
 }
 
-func (s *MountedInputs) Get(ctx context.Context, raw, destination string) (*Object, error) {
-	m, rel, err := s.resolve(raw)
+func (s *mountedS3Reader) Get(ctx context.Context, raw, destination string) (*Object, error) {
+	rel, err := s.resolve(raw)
 	if err != nil {
 		return nil, err
-	}
-	if m == nil {
-		return s.Storage.Get(ctx, raw, destination)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root, err := os.OpenRoot(m.root)
+	root, err := os.OpenRoot(s.root)
 	if err != nil {
 		return nil, fmt.Errorf("open mounted input root: %w", err)
 	}
@@ -265,17 +243,4 @@ func (r inputReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.source.Read(p)
-}
-
-func (s *MountedInputs) UnsupportedOperations(raw string) UnsupportedOperations {
-	unsupported := s.Storage.UnsupportedOperations(raw)
-	m, _, err := s.resolve(raw)
-	if err != nil {
-		unsupported.Get, unsupported.Stat, unsupported.List = err, err, err
-		return unsupported
-	}
-	if m != nil {
-		unsupported.Get, unsupported.Stat, unsupported.List = nil, nil, nil
-	}
-	return unsupported
 }

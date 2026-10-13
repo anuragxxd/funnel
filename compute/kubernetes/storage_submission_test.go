@@ -12,6 +12,7 @@ import (
 	"github.com/ohsu-comp-bio/funnel/events"
 	"github.com/ohsu-comp-bio/funnel/logger"
 	plugin "github.com/ohsu-comp-bio/funnel/plugins/proto"
+	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -256,14 +257,22 @@ func TestInvalidStorageFailsBeforeCreatingResources(t *testing.T) {
 	}
 }
 
-func TestMountedInputReferencesResolveBeforeResourceCreation(t *testing.T) {
+func TestS3MountedReadReferencesResolveBeforeResourceCreation(t *testing.T) {
 	for _, mountName := range []string{"missing", "reference-root"} {
 		t.Run(mountName, func(t *testing.T) {
 			ctx := context.Background()
 			client := bindingClient()
 			conf := bindingConfig(t, existingBinding("shared"))
 			conf.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{{Name: "reference-root", Mount: "mountPath: /reference\nreadOnly: true"}}
-			conf.Kubernetes.Storage.MountedInputs = []*config.KubernetesMountedInput{{URLPrefix: "s3://reference", WorkerMount: mountName}}
+			conf.GenericS3 = []*config.GenericS3Storage{{
+				Endpoint: "https://s3.example.test",
+				Key:      "access-key",
+				Secret:   "access-secret",
+				Bucket:   "reference",
+				MountedRead: &config.S3MountedRead{
+					WorkerMount: mountName,
+				},
+			}}
 			if _, err := client.CoreV1().PersistentVolumeClaims("tasks").Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "tasks"}, Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}}}, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
 			}
@@ -290,8 +299,8 @@ func TestMountedInputReferencesResolveBeforeResourceCreation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(plan.InputRoutes) != 1 || plan.InputRoutes[0].Root != "/reference" || plan.InputRoutes[0].URLPrefix != "s3://reference" {
-				t.Fatalf("submitted Job lost the named input binding: %+v", plan.InputRoutes)
+			if len(plan.S3ReadMounts) != 1 || plan.S3ReadMounts[0] != (storage.S3ReadMount{Endpoint: "https://s3.example.test", Bucket: "reference", Prefix: "", Root: "/reference"}) {
+				t.Fatalf("submitted Job lost the named S3 read mount: %+v", plan.S3ReadMounts)
 			}
 		})
 	}

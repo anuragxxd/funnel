@@ -305,6 +305,14 @@ message GenericS3Storage {
   // AWS Account ID, needed for S3 CSI Driver
   // https://github.com/awslabs/mountpoint-s3/blob/v1.20.0/doc/CONFIGURATION.md#data-encryption
   string AccountID = 8;
+  S3MountedRead MountedRead = 9;
+}
+
+// S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker.
+message S3MountedRead {
+  string WorkerMount = 1;
+  // Prefix is bucket-relative. An empty prefix mounts the whole bucket.
+  string Prefix = 2;
 }
 
 // SwiftStorage configures the OpenStack Swift object storage backend.
@@ -384,6 +392,9 @@ message Kubernetes {
 // its executor pods. Each binding selects either an existing claim or native
 // YAML templates for a per-task PVC and optional PV.
 message KubernetesStorage {
+  reserved 5;
+  reserved "MountedInputs";
+
   string WorkspaceVolume = 1;
   repeated KubernetesStorageBinding Bindings = 2;
   // WorkerContainer selects the worker container receiving generated mounts
@@ -394,14 +405,6 @@ message KubernetesStorage {
   // mounts. It may be empty when the pod has one regular
   // container; set it when the pod has multiple regular containers.
   string ExecutorContainer = 4;
-  // MountedInputs maps S3 prefixes to named worker mount views.
-  repeated KubernetesMountedInput MountedInputs = 5;
-}
-
-// KubernetesMountedInput maps an S3 prefix to an explicitly named worker mount.
-message KubernetesMountedInput {
-  string URLPrefix = 1;
-  string WorkerMount = 2;
 }
 
 // KubernetesStorageBinding names a volume source and the native mounts to add

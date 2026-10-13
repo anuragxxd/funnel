@@ -4,6 +4,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -107,12 +108,12 @@ func (b *Backend) WriteEvent(ctx context.Context, ev *events.Event) error {
 		if b.conf.Plugins != nil {
 			resp, ok := ctx.Value("pluginResponse").(*proto.JobResponse)
 			if !ok {
-				return fmt.Errorf("Failed to unmarshal plugin response %v", ctx.Value("pluginResponse"))
+				return fmt.Errorf("missing or invalid plugin job response")
 			}
 
 			err := mergo.Merge(taskConfig, resp.Config, mergo.WithOverride)
 			if err != nil {
-				return fmt.Errorf("Failed to merge plugin config %v", err)
+				return fmt.Errorf("merging plugin config: %w", err)
 			}
 		}
 		b.log.Debug("taskConfig", "after plugin", taskConfig.Safe())
@@ -147,7 +148,7 @@ func (b *Backend) Submit(ctx context.Context, task *tes.Task, config *config.Con
 			),
 		)
 
-		return fmt.Errorf("creating Worker resources: %v", err)
+		return fmt.Errorf("creating Worker resources: %w", err)
 	}
 
 	return nil
@@ -208,8 +209,13 @@ func (b *Backend) createResources(ctx context.Context, task *tes.Task, config *c
 
 	if plan != nil {
 		if err := b.createBoundStorage(timeoutCtx, task.Id, config.Kubernetes.JobsNamespace, plan, *ownerRef); err != nil {
-			_ = b.Cancel(context.Background(), task.Id)
-			return fmt.Errorf("creating bound storage: %w", err)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			cleanupErr := b.Cancel(cleanupCtx, task.Id)
+			if cleanupErr != nil {
+				cleanupErr = fmt.Errorf("rolling back task %q storage: %w", task.Id, cleanupErr)
+			}
+			return errors.Join(fmt.Errorf("creating bound storage: %w", err), cleanupErr)
 		}
 	}
 

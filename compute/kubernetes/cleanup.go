@@ -13,35 +13,45 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
+
+// readTaskStorage reads the submission snapshot and its owning Job identity.
+// A missing Job or a legacy Job has no storage plan.
+func (b *Backend) readTaskStorage(ctx context.Context, taskID string) (*storageplan.Plan, types.UID, error) {
+	job, err := b.client.BatchV1().Jobs(b.conf.Kubernetes.JobsNamespace).Get(ctx, taskID, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("reading task storage ownership: %w", err)
+	}
+	snapshot := job.Annotations[storageplan.Annotation]
+	if snapshot == "" {
+		return nil, job.UID, nil
+	}
+	plan, err := storageplan.Decode(snapshot)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading task storage plan: %w", err)
+	}
+	if plan.TaskID != taskID || plan.Namespace != b.conf.Kubernetes.JobsNamespace {
+		return nil, "", fmt.Errorf("task storage plan does not match Job identity")
+	}
+	return plan, job.UID, nil
+}
 
 // cleanResources deletes the resources created for a task.
 func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
+	plan, ownerUID, err := b.readTaskStorage(ctx, taskId)
+	if err != nil {
+		return err
+	}
 	var errs error
-
-	// Read the submission snapshot before deleting the Job. It survives changes
-	// to deployment settings and per-task plugin overrides.
-	var plan *storageplan.Plan
-	job, err := b.client.BatchV1().Jobs(b.conf.Kubernetes.JobsNamespace).Get(ctx, taskId, metav1.GetOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("reading task storage ownership: %w", err)
-	}
-	if err == nil {
-		if snapshot := job.Annotations[storageplan.Annotation]; snapshot != "" {
-			plan, err = storageplan.Decode(snapshot)
-			if err != nil {
-				return fmt.Errorf("reading task storage plan: %w", err)
-			}
-			if plan.TaskID != taskId || plan.Namespace != b.conf.Kubernetes.JobsNamespace {
-				return fmt.Errorf("task storage plan does not match Job identity")
-			}
-		}
-	}
 
 	if plan != nil && len(plan.OwnedVolumes) > 0 {
 		// Keep the Job snapshot until every PV delete request is acknowledged.
 		// Kubernetes' PV protection then waits for dependent PVCs to disappear.
-		if err := b.deleteBoundVolumes(ctx, taskId, plan.Namespace, plan.OwnedVolumes, job.UID); err != nil {
+		if err := b.deleteBoundVolumes(ctx, taskId, plan.Namespace, plan.OwnedVolumes, ownerUID); err != nil {
 			return err
 		}
 	}
@@ -53,7 +63,7 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 		errs = multierror.Append(errs, err)
 		b.log.Error("deleting Job", "error", err)
 	} else if plan != nil && len(plan.OwnedVolumes) > 0 {
-		if err := b.releaseStorageFinalizer(ctx, taskId, plan.Namespace, job.UID); err != nil {
+		if err := b.releaseStorageFinalizer(ctx, taskId, plan.Namespace, ownerUID); err != nil {
 			return err
 		}
 	}
@@ -63,11 +73,13 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 	// specifies an externally-managed SA via the _WORKER_SA tag.
 	saOpts := &resources.DeleteServiceAccountOptions{}
 	if b.database != nil {
-		if task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskId, View: tes.View_FULL.String()}); err == nil {
-			if workerSA := task.Tags["_WORKER_SA"]; workerSA != "" {
-				saOpts.ServiceAccountName = workerSA
-				saOpts.SharedSA = true
-			}
+		task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskId, View: tes.View_FULL.String()})
+		if err != nil {
+			// Missing task metadata falls back to the conventional task-scoped name.
+			b.log.Debug("reading task for ServiceAccount cleanup; using task-scoped name", "taskID", taskId, "error", err)
+		} else if workerSA := task.Tags["_WORKER_SA"]; workerSA != "" {
+			saOpts.ServiceAccountName = workerSA
+			saOpts.SharedSA = true
 		}
 	}
 
@@ -105,15 +117,16 @@ func (b *Backend) CleanOrphanedResources(ctx context.Context) {
 		b.log.Error("CleanOrphanedResources: listing storage Jobs", "error", err)
 	} else {
 		for _, job := range jobs.Items {
-			if slices.Contains(job.Finalizers, storageplan.Finalizer) {
-				if job.DeletionTimestamp != nil {
-					if err := b.cleanResources(ctx, job.Name); err != nil {
-						b.log.Error("completing storage cleanup", "taskID", job.Name, "error", err)
-					}
-				} else {
-					taskIDs[job.Name] = struct{}{}
-				}
+			if !slices.Contains(job.Finalizers, storageplan.Finalizer) {
+				continue
 			}
+			if job.DeletionTimestamp != nil {
+				if err := b.cleanResources(ctx, job.Name); err != nil {
+					b.log.Error("completing storage cleanup", "taskID", job.Name, "error", err)
+				}
+				continue
+			}
+			taskIDs[job.Name] = struct{}{}
 		}
 	}
 
@@ -182,10 +195,11 @@ func (b *Backend) CleanOrphanedResources(ctx context.Context) {
 		}
 
 		for _, pv := range ownedPVs {
-			if pv.Labels["taskId"] == taskID {
-				if err := b.deleteBoundVolume(ctx, taskID, namespace, pv.Name); err != nil {
-					b.log.Error("deleting orphaned bound PV", "pv", pv.Name, "error", err)
-				}
+			if pv.Labels["taskId"] != taskID {
+				continue
+			}
+			if err := b.deleteBoundVolume(ctx, taskID, namespace, pv.Name); err != nil {
+				b.log.Error("deleting orphaned bound PV", "pv", pv.Name, "error", err)
 			}
 		}
 

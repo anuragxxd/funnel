@@ -188,6 +188,32 @@ func TestStorageSubmissionFailureCleansOwnedPV(t *testing.T) {
 	}
 }
 
+func TestStorageSubmissionPreservesCreationAndRollbackErrors(t *testing.T) {
+	ctx := context.Background()
+	client := bindingClient()
+	creationErr := errors.New("quota exceeded")
+	rollbackErr := errors.New("PV deletion unavailable")
+	client.PrependReactor("create", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, creationErr
+	})
+	client.PrependReactor("delete", "persistentvolumes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, rollbackErr
+	})
+	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
+	err := backend.Submit(ctx, &tes.Task{Id: "rollback-failure"}, conf)
+	if !errors.Is(err, creationErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("submission must retain both creation and cleanup failures: %v", err)
+	}
+	job, err := client.BatchV1().Jobs("tasks").Get(ctx, "rollback-failure", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(job.Finalizers) == 0 || job.Annotations[storageplan.Annotation] == "" {
+		t.Fatal("failed rollback lost its cleanup record")
+	}
+}
+
 func TestStoragePluginOverridesAreTaskLocal(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()

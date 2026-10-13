@@ -2426,8 +2426,9 @@ type GenericS3Storage struct {
 	KmsKeyID string                 `protobuf:"bytes,7,opt,name=KmsKeyID,proto3" json:"KmsKeyID,omitempty"`
 	// AWS Account ID, needed for S3 CSI Driver
 	// https://github.com/awslabs/mountpoint-s3/blob/v1.20.0/doc/CONFIGURATION.md#data-encryption
-	AccountID     string         `protobuf:"bytes,8,opt,name=AccountID,proto3" json:"AccountID,omitempty"`
-	MountedRead   *S3MountedRead `protobuf:"bytes,9,opt,name=MountedRead,proto3" json:"MountedRead,omitempty"`
+	AccountID     string          `protobuf:"bytes,8,opt,name=AccountID,proto3" json:"AccountID,omitempty"`
+	MountedRead   *S3MountedRead  `protobuf:"bytes,9,opt,name=MountedRead,proto3" json:"MountedRead,omitempty"`
+	MountedWrite  *S3MountedWrite `protobuf:"bytes,10,opt,name=MountedWrite,proto3" json:"MountedWrite,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2525,6 +2526,13 @@ func (x *GenericS3Storage) GetMountedRead() *S3MountedRead {
 	return nil
 }
 
+func (x *GenericS3Storage) GetMountedWrite() *S3MountedWrite {
+	if x != nil {
+		return x.MountedWrite
+	}
+	return nil
+}
+
 // S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker.
 type S3MountedRead struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
@@ -2579,6 +2587,70 @@ func (x *S3MountedRead) GetPrefix() string {
 	return ""
 }
 
+// S3MountedWrite configures output publication through a writable Kubernetes worker mount.
+type S3MountedWrite struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	WorkerMount string                 `protobuf:"bytes,1,opt,name=WorkerMount,proto3" json:"WorkerMount,omitempty"`
+	// Prefix is bucket-relative. An empty prefix mounts the whole bucket.
+	Prefix string `protobuf:"bytes,2,opt,name=Prefix,proto3" json:"Prefix,omitempty"`
+	// Timeout bounds object visibility polling after a worker copies output files.
+	// A nil value uses the default timeout.
+	Timeout       *durationpb.Duration `protobuf:"bytes,3,opt,name=Timeout,proto3" json:"Timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *S3MountedWrite) Reset() {
+	*x = S3MountedWrite{}
+	mi := &file_config_config_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3MountedWrite) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3MountedWrite) ProtoMessage() {}
+
+func (x *S3MountedWrite) ProtoReflect() protoreflect.Message {
+	mi := &file_config_config_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3MountedWrite.ProtoReflect.Descriptor instead.
+func (*S3MountedWrite) Descriptor() ([]byte, []int) {
+	return file_config_config_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *S3MountedWrite) GetWorkerMount() string {
+	if x != nil {
+		return x.WorkerMount
+	}
+	return ""
+}
+
+func (x *S3MountedWrite) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *S3MountedWrite) GetTimeout() *durationpb.Duration {
+	if x != nil {
+		return x.Timeout
+	}
+	return nil
+}
+
 // SwiftStorage configures the OpenStack Swift object storage backend.
 type SwiftStorage struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
@@ -2597,7 +2669,7 @@ type SwiftStorage struct {
 
 func (x *SwiftStorage) Reset() {
 	*x = SwiftStorage{}
-	mi := &file_config_config_proto_msgTypes[32]
+	mi := &file_config_config_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2609,7 +2681,7 @@ func (x *SwiftStorage) String() string {
 func (*SwiftStorage) ProtoMessage() {}
 
 func (x *SwiftStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[32]
+	mi := &file_config_config_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2622,7 +2694,7 @@ func (x *SwiftStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwiftStorage.ProtoReflect.Descriptor instead.
 func (*SwiftStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{32}
+	return file_config_config_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *SwiftStorage) GetDisabled() bool {
@@ -2699,7 +2771,7 @@ type HTTPStorage struct {
 
 func (x *HTTPStorage) Reset() {
 	*x = HTTPStorage{}
-	mi := &file_config_config_proto_msgTypes[33]
+	mi := &file_config_config_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2711,7 +2783,7 @@ func (x *HTTPStorage) String() string {
 func (*HTTPStorage) ProtoMessage() {}
 
 func (x *HTTPStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[33]
+	mi := &file_config_config_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2724,7 +2796,7 @@ func (x *HTTPStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HTTPStorage.ProtoReflect.Descriptor instead.
 func (*HTTPStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{33}
+	return file_config_config_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *HTTPStorage) GetDisabled() bool {
@@ -2754,7 +2826,7 @@ type FTPStorage struct {
 
 func (x *FTPStorage) Reset() {
 	*x = FTPStorage{}
-	mi := &file_config_config_proto_msgTypes[34]
+	mi := &file_config_config_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2766,7 +2838,7 @@ func (x *FTPStorage) String() string {
 func (*FTPStorage) ProtoMessage() {}
 
 func (x *FTPStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[34]
+	mi := &file_config_config_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2779,7 +2851,7 @@ func (x *FTPStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FTPStorage.ProtoReflect.Descriptor instead.
 func (*FTPStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{34}
+	return file_config_config_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *FTPStorage) GetDisabled() bool {
@@ -2853,7 +2925,7 @@ type Kubernetes struct {
 
 func (x *Kubernetes) Reset() {
 	*x = Kubernetes{}
-	mi := &file_config_config_proto_msgTypes[35]
+	mi := &file_config_config_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2865,7 +2937,7 @@ func (x *Kubernetes) String() string {
 func (*Kubernetes) ProtoMessage() {}
 
 func (x *Kubernetes) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[35]
+	mi := &file_config_config_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2878,7 +2950,7 @@ func (x *Kubernetes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Kubernetes.ProtoReflect.Descriptor instead.
 func (*Kubernetes) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{35}
+	return file_config_config_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Kubernetes) GetExecutor() string {
@@ -3056,7 +3128,7 @@ type KubernetesStorage struct {
 
 func (x *KubernetesStorage) Reset() {
 	*x = KubernetesStorage{}
-	mi := &file_config_config_proto_msgTypes[36]
+	mi := &file_config_config_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3068,7 +3140,7 @@ func (x *KubernetesStorage) String() string {
 func (*KubernetesStorage) ProtoMessage() {}
 
 func (x *KubernetesStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[36]
+	mi := &file_config_config_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3081,7 +3153,7 @@ func (x *KubernetesStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesStorage.ProtoReflect.Descriptor instead.
 func (*KubernetesStorage) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{36}
+	return file_config_config_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *KubernetesStorage) GetWorkspaceVolume() string {
@@ -3131,7 +3203,7 @@ type KubernetesStorageBinding struct {
 
 func (x *KubernetesStorageBinding) Reset() {
 	*x = KubernetesStorageBinding{}
-	mi := &file_config_config_proto_msgTypes[37]
+	mi := &file_config_config_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3143,7 +3215,7 @@ func (x *KubernetesStorageBinding) String() string {
 func (*KubernetesStorageBinding) ProtoMessage() {}
 
 func (x *KubernetesStorageBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[37]
+	mi := &file_config_config_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3156,7 +3228,7 @@ func (x *KubernetesStorageBinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesStorageBinding.ProtoReflect.Descriptor instead.
 func (*KubernetesStorageBinding) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{37}
+	return file_config_config_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *KubernetesStorageBinding) GetName() string {
@@ -3225,7 +3297,7 @@ type KubernetesWorkerMount struct {
 
 func (x *KubernetesWorkerMount) Reset() {
 	*x = KubernetesWorkerMount{}
-	mi := &file_config_config_proto_msgTypes[38]
+	mi := &file_config_config_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3237,7 +3309,7 @@ func (x *KubernetesWorkerMount) String() string {
 func (*KubernetesWorkerMount) ProtoMessage() {}
 
 func (x *KubernetesWorkerMount) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[38]
+	mi := &file_config_config_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3250,7 +3322,7 @@ func (x *KubernetesWorkerMount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesWorkerMount.ProtoReflect.Descriptor instead.
 func (*KubernetesWorkerMount) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{38}
+	return file_config_config_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *KubernetesWorkerMount) GetName() string {
@@ -3278,7 +3350,7 @@ type KubernetesStorageTemplates struct {
 
 func (x *KubernetesStorageTemplates) Reset() {
 	*x = KubernetesStorageTemplates{}
-	mi := &file_config_config_proto_msgTypes[39]
+	mi := &file_config_config_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3290,7 +3362,7 @@ func (x *KubernetesStorageTemplates) String() string {
 func (*KubernetesStorageTemplates) ProtoMessage() {}
 
 func (x *KubernetesStorageTemplates) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[39]
+	mi := &file_config_config_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3303,7 +3375,7 @@ func (x *KubernetesStorageTemplates) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesStorageTemplates.ProtoReflect.Descriptor instead.
 func (*KubernetesStorageTemplates) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{39}
+	return file_config_config_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *KubernetesStorageTemplates) GetPVC() string {
@@ -3331,7 +3403,7 @@ type KubernetesResources struct {
 
 func (x *KubernetesResources) Reset() {
 	*x = KubernetesResources{}
-	mi := &file_config_config_proto_msgTypes[40]
+	mi := &file_config_config_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3343,7 +3415,7 @@ func (x *KubernetesResources) String() string {
 func (*KubernetesResources) ProtoMessage() {}
 
 func (x *KubernetesResources) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[40]
+	mi := &file_config_config_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3356,7 +3428,7 @@ func (x *KubernetesResources) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesResources.ProtoReflect.Descriptor instead.
 func (*KubernetesResources) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{40}
+	return file_config_config_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *KubernetesResources) GetDefaults() *ResourceDefaults {
@@ -3385,7 +3457,7 @@ type ResourceDefaults struct {
 
 func (x *ResourceDefaults) Reset() {
 	*x = ResourceDefaults{}
-	mi := &file_config_config_proto_msgTypes[41]
+	mi := &file_config_config_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3397,7 +3469,7 @@ func (x *ResourceDefaults) String() string {
 func (*ResourceDefaults) ProtoMessage() {}
 
 func (x *ResourceDefaults) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[41]
+	mi := &file_config_config_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3410,7 +3482,7 @@ func (x *ResourceDefaults) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceDefaults.ProtoReflect.Descriptor instead.
 func (*ResourceDefaults) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{41}
+	return file_config_config_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ResourceDefaults) GetCpus() string {
@@ -3446,7 +3518,7 @@ type ResourceLimits struct {
 
 func (x *ResourceLimits) Reset() {
 	*x = ResourceLimits{}
-	mi := &file_config_config_proto_msgTypes[42]
+	mi := &file_config_config_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3458,7 +3530,7 @@ func (x *ResourceLimits) String() string {
 func (*ResourceLimits) ProtoMessage() {}
 
 func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[42]
+	mi := &file_config_config_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3471,7 +3543,7 @@ func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceLimits.ProtoReflect.Descriptor instead.
 func (*ResourceLimits) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{42}
+	return file_config_config_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ResourceLimits) GetCpus() string {
@@ -3510,7 +3582,7 @@ type Toleration struct {
 
 func (x *Toleration) Reset() {
 	*x = Toleration{}
-	mi := &file_config_config_proto_msgTypes[43]
+	mi := &file_config_config_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3522,7 +3594,7 @@ func (x *Toleration) String() string {
 func (*Toleration) ProtoMessage() {}
 
 func (x *Toleration) ProtoReflect() protoreflect.Message {
-	mi := &file_config_config_proto_msgTypes[43]
+	mi := &file_config_config_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3535,7 +3607,7 @@ func (x *Toleration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Toleration.ProtoReflect.Descriptor instead.
 func (*Toleration) Descriptor() ([]byte, []int) {
-	return file_config_config_proto_rawDescGZIP(), []int{43}
+	return file_config_config_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *Toleration) GetKey() string {
@@ -3800,7 +3872,7 @@ const file_config_config_proto_rawDesc = "" +
 	"\x0fAmazonS3Storage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1d\n" +
 	"\x03SSE\x18\x02 \x01(\v2\v.config.SSER\x03SSE\x12/\n" +
-	"\tAWSConfig\x18\x03 \x01(\v2\x11.config.AWSConfigR\tAWSConfig\"\x97\x02\n" +
+	"\tAWSConfig\x18\x03 \x01(\v2\x11.config.AWSConfigR\tAWSConfig\"\xd3\x02\n" +
 	"\x10GenericS3Storage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1a\n" +
 	"\bEndpoint\x18\x02 \x01(\tR\bEndpoint\x12\x10\n" +
@@ -3810,10 +3882,16 @@ const file_config_config_proto_rawDesc = "" +
 	"\x06Bucket\x18\x06 \x01(\tR\x06Bucket\x12\x1a\n" +
 	"\bKmsKeyID\x18\a \x01(\tR\bKmsKeyID\x12\x1c\n" +
 	"\tAccountID\x18\b \x01(\tR\tAccountID\x127\n" +
-	"\vMountedRead\x18\t \x01(\v2\x15.config.S3MountedReadR\vMountedRead\"I\n" +
+	"\vMountedRead\x18\t \x01(\v2\x15.config.S3MountedReadR\vMountedRead\x12:\n" +
+	"\fMountedWrite\x18\n" +
+	" \x01(\v2\x16.config.S3MountedWriteR\fMountedWrite\"I\n" +
 	"\rS3MountedRead\x12 \n" +
 	"\vWorkerMount\x18\x01 \x01(\tR\vWorkerMount\x12\x16\n" +
-	"\x06Prefix\x18\x02 \x01(\tR\x06Prefix\"\xa0\x02\n" +
+	"\x06Prefix\x18\x02 \x01(\tR\x06Prefix\"\x7f\n" +
+	"\x0eS3MountedWrite\x12 \n" +
+	"\vWorkerMount\x18\x01 \x01(\tR\vWorkerMount\x12\x16\n" +
+	"\x06Prefix\x18\x02 \x01(\tR\x06Prefix\x123\n" +
+	"\aTimeout\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\aTimeout\"\xa0\x02\n" +
 	"\fSwiftStorage\x12\x1a\n" +
 	"\bDisabled\x18\x01 \x01(\bR\bDisabled\x12\x1a\n" +
 	"\bUserName\x18\x02 \x01(\tR\bUserName\x12\x1a\n" +
@@ -3918,7 +3996,7 @@ func file_config_config_proto_rawDescGZIP() []byte {
 	return file_config_config_proto_rawDescData
 }
 
-var file_config_config_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
+var file_config_config_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
 var file_config_config_proto_goTypes = []any{
 	(*GridEngine)(nil),                 // 0: config.GridEngine
 	(*Config)(nil),                     // 1: config.Config
@@ -3952,25 +4030,26 @@ var file_config_config_proto_goTypes = []any{
 	(*AmazonS3Storage)(nil),            // 29: config.AmazonS3Storage
 	(*GenericS3Storage)(nil),           // 30: config.GenericS3Storage
 	(*S3MountedRead)(nil),              // 31: config.S3MountedRead
-	(*SwiftStorage)(nil),               // 32: config.SwiftStorage
-	(*HTTPStorage)(nil),                // 33: config.HTTPStorage
-	(*FTPStorage)(nil),                 // 34: config.FTPStorage
-	(*Kubernetes)(nil),                 // 35: config.Kubernetes
-	(*KubernetesStorage)(nil),          // 36: config.KubernetesStorage
-	(*KubernetesStorageBinding)(nil),   // 37: config.KubernetesStorageBinding
-	(*KubernetesWorkerMount)(nil),      // 38: config.KubernetesWorkerMount
-	(*KubernetesStorageTemplates)(nil), // 39: config.KubernetesStorageTemplates
-	(*KubernetesResources)(nil),        // 40: config.KubernetesResources
-	(*ResourceDefaults)(nil),           // 41: config.ResourceDefaults
-	(*ResourceLimits)(nil),             // 42: config.ResourceLimits
-	(*Toleration)(nil),                 // 43: config.Toleration
-	nil,                                // 44: config.Plugins.ParamsEntry
-	nil,                                // 45: config.Node.MetadataEntry
-	nil,                                // 46: config.ContainerConfig.EnvEntry
-	nil,                                // 47: config.ContainerConfig.TagsEntry
-	nil,                                // 48: config.Kubernetes.NodeSelectorEntry
-	(*logger.LoggerConfig)(nil),        // 49: logger.LoggerConfig
-	(*durationpb.Duration)(nil),        // 50: google.protobuf.Duration
+	(*S3MountedWrite)(nil),             // 32: config.S3MountedWrite
+	(*SwiftStorage)(nil),               // 33: config.SwiftStorage
+	(*HTTPStorage)(nil),                // 34: config.HTTPStorage
+	(*FTPStorage)(nil),                 // 35: config.FTPStorage
+	(*Kubernetes)(nil),                 // 36: config.Kubernetes
+	(*KubernetesStorage)(nil),          // 37: config.KubernetesStorage
+	(*KubernetesStorageBinding)(nil),   // 38: config.KubernetesStorageBinding
+	(*KubernetesWorkerMount)(nil),      // 39: config.KubernetesWorkerMount
+	(*KubernetesStorageTemplates)(nil), // 40: config.KubernetesStorageTemplates
+	(*KubernetesResources)(nil),        // 41: config.KubernetesResources
+	(*ResourceDefaults)(nil),           // 42: config.ResourceDefaults
+	(*ResourceLimits)(nil),             // 43: config.ResourceLimits
+	(*Toleration)(nil),                 // 44: config.Toleration
+	nil,                                // 45: config.Plugins.ParamsEntry
+	nil,                                // 46: config.Node.MetadataEntry
+	nil,                                // 47: config.ContainerConfig.EnvEntry
+	nil,                                // 48: config.ContainerConfig.TagsEntry
+	nil,                                // 49: config.Kubernetes.NodeSelectorEntry
+	(*logger.LoggerConfig)(nil),        // 50: logger.LoggerConfig
+	(*durationpb.Duration)(nil),        // 51: google.protobuf.Duration
 }
 var file_config_config_proto_depIdxs = []int32{
 	7,  // 0: config.Config.Server:type_name -> config.Server
@@ -3978,7 +4057,7 @@ var file_config_config_proto_depIdxs = []int32{
 	8,  // 2: config.Config.Scheduler:type_name -> config.Scheduler
 	10, // 3: config.Config.Node:type_name -> config.Node
 	11, // 4: config.Config.Worker:type_name -> config.Worker
-	49, // 5: config.Config.Logger:type_name -> logger.LoggerConfig
+	50, // 5: config.Config.Logger:type_name -> logger.LoggerConfig
 	14, // 6: config.Config.BoltDB:type_name -> config.BoltDB
 	15, // 7: config.Config.Badger:type_name -> config.Badger
 	25, // 8: config.Config.DynamoDB:type_name -> config.DynamoDB
@@ -3993,64 +4072,66 @@ var file_config_config_proto_depIdxs = []int32{
 	13, // 17: config.Config.PBS:type_name -> config.HPCBackend
 	0,  // 18: config.Config.GridEngine:type_name -> config.GridEngine
 	22, // 19: config.Config.AWSBatch:type_name -> config.AWSBatch
-	35, // 20: config.Config.Kubernetes:type_name -> config.Kubernetes
+	36, // 20: config.Config.Kubernetes:type_name -> config.Kubernetes
 	23, // 21: config.Config.GCPBatch:type_name -> config.GCPBatch
 	26, // 22: config.Config.LocalStorage:type_name -> config.LocalStorage
 	29, // 23: config.Config.AmazonS3:type_name -> config.AmazonS3Storage
 	30, // 24: config.Config.GenericS3:type_name -> config.GenericS3Storage
 	27, // 25: config.Config.GoogleStorage:type_name -> config.GoogleCloudStorage
-	32, // 26: config.Config.Swift:type_name -> config.SwiftStorage
-	33, // 27: config.Config.HTTPStorage:type_name -> config.HTTPStorage
-	34, // 28: config.Config.FTPStorage:type_name -> config.FTPStorage
+	33, // 26: config.Config.Swift:type_name -> config.SwiftStorage
+	34, // 27: config.Config.HTTPStorage:type_name -> config.HTTPStorage
+	35, // 28: config.Config.FTPStorage:type_name -> config.FTPStorage
 	2,  // 29: config.Config.Plugins:type_name -> config.Plugins
-	44, // 30: config.Plugins.Params:type_name -> config.Plugins.ParamsEntry
-	50, // 31: config.TimeoutConfig.duration:type_name -> google.protobuf.Duration
+	45, // 30: config.Plugins.Params:type_name -> config.Plugins.ParamsEntry
+	51, // 31: config.TimeoutConfig.duration:type_name -> google.protobuf.Duration
 	3,  // 32: config.RPCClient.Credential:type_name -> config.BasicCredential
 	5,  // 33: config.RPCClient.Timeout:type_name -> config.TimeoutConfig
 	3,  // 34: config.Server.BasicAuth:type_name -> config.BasicCredential
 	4,  // 35: config.Server.OidcAuth:type_name -> config.OidcAuth
-	50, // 36: config.Scheduler.ScheduleRate:type_name -> google.protobuf.Duration
+	51, // 36: config.Scheduler.ScheduleRate:type_name -> google.protobuf.Duration
 	5,  // 37: config.Scheduler.NodePingTimeout:type_name -> config.TimeoutConfig
 	5,  // 38: config.Scheduler.NodeInitTimeout:type_name -> config.TimeoutConfig
 	5,  // 39: config.Scheduler.NodeDeadTimeout:type_name -> config.TimeoutConfig
 	9,  // 40: config.Node.Resources:type_name -> config.Resources
 	5,  // 41: config.Node.Timeout:type_name -> config.TimeoutConfig
-	50, // 42: config.Node.UpdateRate:type_name -> google.protobuf.Duration
-	45, // 43: config.Node.Metadata:type_name -> config.Node.MetadataEntry
-	50, // 44: config.Worker.PollingRate:type_name -> google.protobuf.Duration
-	50, // 45: config.Worker.LogUpdateRate:type_name -> google.protobuf.Duration
+	51, // 42: config.Node.UpdateRate:type_name -> google.protobuf.Duration
+	46, // 43: config.Node.Metadata:type_name -> config.Node.MetadataEntry
+	51, // 44: config.Worker.PollingRate:type_name -> google.protobuf.Duration
+	51, // 45: config.Worker.LogUpdateRate:type_name -> google.protobuf.Duration
 	12, // 46: config.Worker.Container:type_name -> config.ContainerConfig
-	46, // 47: config.ContainerConfig.Env:type_name -> config.ContainerConfig.EnvEntry
-	47, // 48: config.ContainerConfig.Tags:type_name -> config.ContainerConfig.TagsEntry
-	50, // 49: config.HPCBackend.ReconcileRate:type_name -> google.protobuf.Duration
+	47, // 47: config.ContainerConfig.Env:type_name -> config.ContainerConfig.EnvEntry
+	48, // 48: config.ContainerConfig.Tags:type_name -> config.ContainerConfig.TagsEntry
+	51, // 49: config.HPCBackend.ReconcileRate:type_name -> google.protobuf.Duration
 	5,  // 50: config.MongoDB.Timeout:type_name -> config.TimeoutConfig
 	5,  // 51: config.Postgres.Timeout:type_name -> config.TimeoutConfig
-	50, // 52: config.AWSBatch.ReconcileRate:type_name -> google.protobuf.Duration
+	51, // 52: config.AWSBatch.ReconcileRate:type_name -> google.protobuf.Duration
 	21, // 53: config.AWSBatch.AWSConfig:type_name -> config.AWSConfig
-	50, // 54: config.GCPBatch.ReconcileRate:type_name -> google.protobuf.Duration
+	51, // 54: config.GCPBatch.ReconcileRate:type_name -> google.protobuf.Duration
 	23, // 55: config.GCPBatch.GCPBatch:type_name -> config.GCPBatch
 	21, // 56: config.DynamoDB.AWSConfig:type_name -> config.AWSConfig
 	28, // 57: config.AmazonS3Storage.SSE:type_name -> config.SSE
 	21, // 58: config.AmazonS3Storage.AWSConfig:type_name -> config.AWSConfig
 	31, // 59: config.GenericS3Storage.MountedRead:type_name -> config.S3MountedRead
-	5,  // 60: config.HTTPStorage.Timeout:type_name -> config.TimeoutConfig
-	5,  // 61: config.FTPStorage.Timeout:type_name -> config.TimeoutConfig
-	50, // 62: config.Kubernetes.ReconcileRate:type_name -> google.protobuf.Duration
-	48, // 63: config.Kubernetes.NodeSelector:type_name -> config.Kubernetes.NodeSelectorEntry
-	43, // 64: config.Kubernetes.Tolerations:type_name -> config.Toleration
-	40, // 65: config.Kubernetes.Resources:type_name -> config.KubernetesResources
-	5,  // 66: config.Kubernetes.Timeout:type_name -> config.TimeoutConfig
-	36, // 67: config.Kubernetes.Storage:type_name -> config.KubernetesStorage
-	37, // 68: config.KubernetesStorage.Bindings:type_name -> config.KubernetesStorageBinding
-	39, // 69: config.KubernetesStorageBinding.Templates:type_name -> config.KubernetesStorageTemplates
-	38, // 70: config.KubernetesStorageBinding.WorkerMounts:type_name -> config.KubernetesWorkerMount
-	41, // 71: config.KubernetesResources.Defaults:type_name -> config.ResourceDefaults
-	42, // 72: config.KubernetesResources.Limits:type_name -> config.ResourceLimits
-	73, // [73:73] is the sub-list for method output_type
-	73, // [73:73] is the sub-list for method input_type
-	73, // [73:73] is the sub-list for extension type_name
-	73, // [73:73] is the sub-list for extension extendee
-	0,  // [0:73] is the sub-list for field type_name
+	32, // 60: config.GenericS3Storage.MountedWrite:type_name -> config.S3MountedWrite
+	51, // 61: config.S3MountedWrite.Timeout:type_name -> google.protobuf.Duration
+	5,  // 62: config.HTTPStorage.Timeout:type_name -> config.TimeoutConfig
+	5,  // 63: config.FTPStorage.Timeout:type_name -> config.TimeoutConfig
+	51, // 64: config.Kubernetes.ReconcileRate:type_name -> google.protobuf.Duration
+	49, // 65: config.Kubernetes.NodeSelector:type_name -> config.Kubernetes.NodeSelectorEntry
+	44, // 66: config.Kubernetes.Tolerations:type_name -> config.Toleration
+	41, // 67: config.Kubernetes.Resources:type_name -> config.KubernetesResources
+	5,  // 68: config.Kubernetes.Timeout:type_name -> config.TimeoutConfig
+	37, // 69: config.Kubernetes.Storage:type_name -> config.KubernetesStorage
+	38, // 70: config.KubernetesStorage.Bindings:type_name -> config.KubernetesStorageBinding
+	40, // 71: config.KubernetesStorageBinding.Templates:type_name -> config.KubernetesStorageTemplates
+	39, // 72: config.KubernetesStorageBinding.WorkerMounts:type_name -> config.KubernetesWorkerMount
+	42, // 73: config.KubernetesResources.Defaults:type_name -> config.ResourceDefaults
+	43, // 74: config.KubernetesResources.Limits:type_name -> config.ResourceLimits
+	75, // [75:75] is the sub-list for method output_type
+	75, // [75:75] is the sub-list for method input_type
+	75, // [75:75] is the sub-list for extension type_name
+	75, // [75:75] is the sub-list for extension extendee
+	0,  // [0:75] is the sub-list for field type_name
 }
 
 func init() { file_config_config_proto_init() }
@@ -4062,18 +4143,18 @@ func file_config_config_proto_init() {
 		(*TimeoutConfig_Duration)(nil),
 		(*TimeoutConfig_Disabled)(nil),
 	}
-	file_config_config_proto_msgTypes[37].OneofWrappers = []any{
+	file_config_config_proto_msgTypes[38].OneofWrappers = []any{
 		(*KubernetesStorageBinding_ExistingClaim)(nil),
 		(*KubernetesStorageBinding_Templates)(nil),
 	}
-	file_config_config_proto_msgTypes[43].OneofWrappers = []any{}
+	file_config_config_proto_msgTypes[44].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_config_config_proto_rawDesc), len(file_config_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   49,
+			NumMessages:   50,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

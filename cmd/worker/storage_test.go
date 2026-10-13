@@ -108,14 +108,31 @@ func TestWorkerEmptySnapshotDoesNotActivateStaticMountedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(storageplan.Env, snapshot)
-	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{WorkerMount: "missing"}}}
+	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{WorkerMount: "missing"}, MountedWrite: &config.S3MountedWrite{WorkerMount: "missing-output"}}}
 	opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"snapshot-test","executors":[{"image":"alpine","command":["true"]}]}`))}
 	w, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	if len(w.Executor.StoragePlan.S3ReadMounts) != 0 {
+	if len(w.Executor.StoragePlan.S3ReadMounts) != 0 || len(w.Executor.StoragePlan.S3WriteMounts) != 0 {
 		t.Fatal("static config changed submitted mount list")
+	}
+}
+
+func TestWorkerRejectsMountedWriteWithoutSubmittedPlan(t *testing.T) {
+	t.Setenv(storageplan.Env, "")
+	for _, compute := range []string{"local", "kubernetes"} {
+		t.Run(compute, func(t *testing.T) {
+			conf := config.DefaultConfig()
+			conf.Compute = compute
+			conf.EventWriters = nil
+			conf.GenericS3 = []*config.GenericS3Storage{{MountedWrite: &config.S3MountedWrite{WorkerMount: "outputs"}}}
+			opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"task","executors":[{"image":"alpine","command":["true"]}]}`))}
+			_, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
+			if err == nil || !strings.Contains(err.Error(), "requires a submitted Kubernetes storage plan") {
+				t.Fatalf("unresolved mounted write accepted: %v", err)
+			}
+		})
 	}
 }

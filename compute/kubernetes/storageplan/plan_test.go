@@ -1,13 +1,16 @@
 package storageplan
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	"google.golang.org/protobuf/types/known/durationpb"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +39,13 @@ func mountedS3(bucket, prefix, workerMount string) *config.GenericS3Storage {
 			Prefix:      prefix,
 		},
 	}
+}
+
+func mountedS3Write(bucket, prefix, workerMount string, timeout *durationpb.Duration) *config.GenericS3Storage {
+	backend := mountedS3(bucket, prefix, workerMount)
+	backend.MountedRead = nil
+	backend.MountedWrite = &config.S3MountedWrite{WorkerMount: workerMount, Prefix: prefix, Timeout: timeout}
+	return backend
 }
 
 const pvcTemplate = `apiVersion: v1
@@ -343,6 +353,205 @@ func TestS3MountedReadRequiresKubernetesStorage(t *testing.T) {
 	}
 }
 
+func TestS3MountedWriteTracksNativeMountAndSnapshot(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
+		namedMount("output-view", "mountPath: /outputs\nsubPath: task-results"),
+	}
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("results-bucket", "results/", "output-view", nil)}
+
+	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDefault := storage.S3WriteMount{
+		Endpoint: "https://s3.example.test/custom/path",
+		Bucket:   "results-bucket",
+		Prefix:   "results/",
+		Root:     "/outputs",
+		Timeout:  3 * time.Hour,
+	}
+	if len(p.S3WriteMounts) != 1 || p.S3WriteMounts[0] != wantDefault {
+		t.Fatalf("default S3 write mount mismatch: %+v", p.S3WriteMounts)
+	}
+	if len(p.WorkerMounts) != 1 || p.WorkerMounts[0].MountPath != "/outputs" || p.WorkerMounts[0].SubPath != "task-results" {
+		t.Fatalf("native write mount fields changed: %+v", p.WorkerMounts)
+	}
+	snapshot, err := p.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(snapshot, "access-key") || strings.Contains(snapshot, "access-secret") {
+		t.Fatalf("storage snapshot contains S3 credentials: %s", snapshot)
+	}
+	restored, err := Decode(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.S3WriteMounts) != 1 || restored.S3WriteMounts[0] != wantDefault || restored.WorkerMounts[0].SubPath != "task-results" {
+		t.Fatalf("snapshot lost S3 write mount identity or native subpath: %+v", restored)
+	}
+	wrongRoot := *restored
+	wrongRoot.S3WriteMounts = append([]storage.S3WriteMount(nil), restored.S3WriteMounts...)
+	wrongRoot.S3WriteMounts[0].Root = "/unmounted"
+	if _, err := wrongRoot.Encode(); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
+		t.Fatalf("unmounted S3 write root accepted: %v", err)
+	}
+
+	c.GenericS3[0].MountedWrite.Timeout = durationpb.New(45 * time.Minute)
+	p, err = Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCustom := wantDefault
+	wantCustom.Timeout = 45 * time.Minute
+	if len(p.S3WriteMounts) != 1 || p.S3WriteMounts[0] != wantCustom {
+		t.Fatalf("custom S3 write timeout mismatch: %+v", p.S3WriteMounts)
+	}
+}
+
+func TestS3MountedWriteRequiresWritableMountInConfigAndSnapshot(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{
+		Name:         "results",
+		Source:       &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "task-results"},
+		WorkerMounts: []*config.KubernetesWorkerMount{namedMount("output-view", "mountPath: /outputs")},
+	})
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("results-bucket", "results/", "output-view", nil)}
+	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.Kubernetes.Storage.Bindings[1].WorkerMounts[0].Mount = "mountPath: /outputs\nreadOnly: true"
+	if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "must be writable") {
+		t.Fatalf("read-only configured output mount accepted: %v", err)
+	}
+
+	snapshot, err := p.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(snapshot), &payload); err != nil {
+		t.Fatal(err)
+	}
+	mounts := payload["WorkerMounts"].([]any)
+	mounts[0].(map[string]any)["readOnly"] = true
+	readonlySnapshot, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(string(readonlySnapshot)); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
+		t.Fatalf("snapshot with read-only S3 write root accepted: %v", err)
+	}
+
+	if err := json.Unmarshal([]byte(snapshot), &payload); err != nil {
+		t.Fatal(err)
+	}
+	volumes := payload["Volumes"].([]any)
+	foundResultsVolume := false
+	for _, item := range volumes {
+		volume := item.(map[string]any)
+		if volume["name"] == "results" {
+			volume["persistentVolumeClaim"].(map[string]any)["readOnly"] = true
+			foundResultsVolume = true
+		}
+	}
+	if !foundResultsVolume {
+		t.Fatal("snapshot omitted the results volume")
+	}
+	readonlyVolumeSnapshot, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decode(string(readonlyVolumeSnapshot)); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
+		t.Fatalf("snapshot with read-only S3 write volume accepted: %v", err)
+	}
+}
+
+func TestS3MountedWriteRejectsInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*config.Config)
+		want   string
+	}{
+		{
+			name: "disabled backend",
+			change: func(c *config.Config) {
+				backend := mountedS3Write("bucket", "results/", "output-view", nil)
+				backend.Disabled = true
+				c.GenericS3 = []*config.GenericS3Storage{backend}
+			},
+			want: "disabled or invalid",
+		},
+		{
+			name: "missing bucket",
+			change: func(c *config.Config) {
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("", "results/", "output-view", nil)}
+			},
+			want: "requires a bucket",
+		},
+		{
+			name: "unknown worker mount",
+			change: func(c *config.Config) {
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "missing-view", nil)}
+			},
+			want: "unknown worker mount",
+		},
+		{
+			name: "duplicate API-only backend identity",
+			change: func(c *config.Config) {
+				other := mountedS3Write("bucket", "", "output-view", nil)
+				other.MountedWrite = nil
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", nil), other}
+			},
+			want: "duplicate mounted S3 backend",
+		},
+		{
+			name: "zero timeout",
+			change: func(c *config.Config) {
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", durationpb.New(0))}
+			},
+			want: "must be positive",
+		},
+		{
+			name: "negative timeout",
+			change: func(c *config.Config) {
+				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", durationpb.New(-time.Second))}
+			},
+			want: "must be positive",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := existingConfig()
+			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
+				namedMount("output-view", "mountPath: /outputs"),
+			}
+			tt.change(c)
+			_, err := Resolve(&tes.Task{Id: "task-123"}, c)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestS3MountedWriteRequiresKubernetesStorage(t *testing.T) {
+	for _, change := range []func(*config.Config){
+		func(c *config.Config) { c.Kubernetes.Storage = nil },
+		func(c *config.Config) { c.Kubernetes = nil },
+	} {
+		c := existingConfig()
+		c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", nil)}
+		change(c)
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "require Kubernetes.Storage") {
+			t.Fatalf("configured S3 mounted write without Kubernetes.Storage was not rejected: %v", err)
+		}
+	}
+}
+
 func TestNamedContainersReceiveStorageMounts(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.WorkerContainer = "funnel-worker"
@@ -608,17 +817,17 @@ func TestInvalidSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":3`, `"Version":2`, 1), strings.Replace(snapshot, `"Version":3`, `"Version":4`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
+	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":4`, `"Version":3`, 1), strings.Replace(snapshot, `"Version":4`, `"Version":5`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
 		if _, err := Decode(invalid); err == nil {
 			t.Fatalf("invalid snapshot accepted: %s", invalid)
 		}
 	}
-	if _, err := Decode(strings.Replace(snapshot, `"Version":3`, `"Version":2`, 1)); err == nil || !strings.Contains(err.Error(), "version 3 is required") {
-		t.Fatalf("version 2 storage plan snapshot was not rejected clearly: %v", err)
+	if _, err := Decode(strings.Replace(snapshot, `"Version":4`, `"Version":3`, 1)); err == nil || !strings.Contains(err.Error(), "version 4 is required") {
+		t.Fatalf("version 3 storage plan snapshot was not rejected clearly: %v", err)
 	}
-	oldSnapshot := `{"Version":2,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","InputRoutes":[{"URLPrefix":"s3://bucket/ref","Root":"/mnt/reference"}],"Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
-	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 2; version 3 is required") {
-		t.Fatalf("actual version 2 fields hid the actionable version error: %v", err)
+	oldSnapshot := `{"Version":3,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
+	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 3; version 4 is required") {
+		t.Fatalf("actual version 3 fields hid the actionable version error: %v", err)
 	}
 }
 

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func TestKubernetesStorageConfigRoundTrip(t *testing.T) {
@@ -26,6 +28,9 @@ Kubernetes:
             Mount: |-
               mountPath: /data
               subPath: inputs
+          - Name: output-view
+            Mount: |-
+              mountPath: /outputs
       - Name: mounted-s3
         Templates:
           PVC: |-
@@ -42,6 +47,10 @@ GenericS3:
     MountedRead:
       WorkerMount: input-view
       Prefix: prefix/
+    MountedWrite:
+      WorkerMount: output-view
+      Prefix: results/
+      Timeout: 90s
 `)
 
 	got := EmptyConfig()
@@ -55,6 +64,11 @@ GenericS3:
 			Key:      "access",
 			Secret:   "secret",
 			Bucket:   "bucket",
+			MountedWrite: &S3MountedWrite{
+				WorkerMount: "output-view",
+				Prefix:      "results/",
+				Timeout:     durationpb.New(90 * time.Second),
+			},
 			MountedRead: &S3MountedRead{
 				WorkerMount: "input-view",
 				Prefix:      "prefix/",
@@ -67,9 +81,12 @@ GenericS3:
 				ExecutorContainer: "funnel-executor",
 				Bindings: []*KubernetesStorageBinding{
 					{
-						Name:         "shared-inputs",
-						Source:       &KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"},
-						WorkerMounts: []*KubernetesWorkerMount{{Name: "input-view", Mount: "mountPath: /data\nsubPath: inputs"}},
+						Name:   "shared-inputs",
+						Source: &KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"},
+						WorkerMounts: []*KubernetesWorkerMount{
+							{Name: "input-view", Mount: "mountPath: /data\nsubPath: inputs"},
+							{Name: "output-view", Mount: "mountPath: /outputs"},
+						},
 					},
 					{
 						Name: "mounted-s3",
@@ -188,12 +205,26 @@ func TestKubernetesSchemaFieldCompatibility(t *testing.T) {
 	if s3MountedRead == nil || s3MountedRead.Number() != 9 || s3MountedRead.Kind() != protoreflect.MessageKind {
 		t.Fatalf("GenericS3Storage.MountedRead field = %v, want optional message field 9", s3MountedRead)
 	}
+	s3MountedWrite := (&GenericS3Storage{}).ProtoReflect().Descriptor().Fields().ByName("MountedWrite")
+	if s3MountedWrite == nil || s3MountedWrite.Number() != 10 || s3MountedWrite.Kind() != protoreflect.MessageKind {
+		t.Fatalf("GenericS3Storage.MountedWrite field = %v, want optional message field 10", s3MountedWrite)
+	}
 	readFields := (&S3MountedRead{}).ProtoReflect().Descriptor().Fields()
 	if field := readFields.ByName("WorkerMount"); field == nil || field.Number() != 1 {
 		t.Fatalf("S3MountedRead.WorkerMount field = %v, want 1", field)
 	}
 	if field := readFields.ByName("Prefix"); field == nil || field.Number() != 2 {
 		t.Fatalf("S3MountedRead.Prefix field = %v, want 2", field)
+	}
+	writeFields := (&S3MountedWrite{}).ProtoReflect().Descriptor().Fields()
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"WorkerMount": 1,
+		"Prefix":      2,
+		"Timeout":     3,
+	} {
+		if field := writeFields.ByName(name); field == nil || field.Number() != number {
+			t.Fatalf("S3MountedWrite.%s field = %v, want %d", name, field, number)
+		}
 	}
 	if configDescriptor.ParentFile().Messages().ByName("KubernetesMountedInput") != nil {
 		t.Fatal("KubernetesMountedInput message must be removed")

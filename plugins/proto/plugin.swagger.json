@@ -408,6 +408,9 @@
         },
         "MountedRead": {
           "$ref": "#/definitions/configS3MountedRead"
+        },
+        "MountedWrite": {
+          "$ref": "#/definitions/configS3MountedWrite"
         }
       },
       "description": "GenericS3Storage describes the configuration for the Generic S3 storage backend."
@@ -880,6 +883,23 @@
         }
       },
       "description": "S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker."
+    },
+    "configS3MountedWrite": {
+      "type": "object",
+      "properties": {
+        "WorkerMount": {
+          "type": "string"
+        },
+        "Prefix": {
+          "type": "string",
+          "description": "Prefix is bucket-relative. An empty prefix mounts the whole bucket."
+        },
+        "Timeout": {
+          "type": "string",
+          "description": "Timeout bounds object visibility polling after a worker copies output files.\nA nil value uses the default timeout."
+        }
+      },
+      "description": "S3MountedWrite configures output publication through a writable Kubernetes worker mount."
     },
     "configSSE": {
       "type": "object",

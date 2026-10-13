@@ -27,6 +27,7 @@ type GenericS3 struct {
 	bucket             string
 	configuredEndpoint string
 	mountedRead        *mountedS3Reader
+	mountedWrite       *mountedS3Writer
 }
 
 // NewGenericS3 creates a new GenericS3 instance, given an endpoint URL
@@ -272,7 +273,7 @@ func download(ctx context.Context, client *minio.Client, bucket, objectPath, fil
 }
 
 // waitForLocalFile tolerates temporary visibility errors on mounted workspaces.
-// Local readability does not establish remote publication; Put requires an S3 upload response.
+// Local readability does not establish remote publication; Put verifies it through S3.
 func waitForLocalFile(ctx context.Context, path string) (os.FileInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -297,9 +298,13 @@ func waitForLocalFile(ctx context.Context, path string) (os.FileInfo, error) {
 	}
 }
 
-// Put uploads a local file and returns the acknowledged write's metadata.
-// Directory uploads return an aggregate receipt after every file is acknowledged.
+// Put publishes a local file through an API upload or a configured mounted write.
+// Mounted writes verify remote existence and size; API uploads require an upload response.
+// Directory publication returns aggregate metadata after every file succeeds.
 func (s3 *GenericS3) Put(ctx context.Context, url, path string) (*Object, error) {
+	if _, matched := s3.mountedWriteURL(url); matched {
+		return s3.putMounted(ctx, url, path)
+	}
 	u, err := s3.parse(url)
 	if err != nil {
 		return nil, err
@@ -367,6 +372,10 @@ func (s3 *GenericS3) UnsupportedOperations(url string) UnsupportedOperations {
 	if raw, matched := s3.mountedURL(url); matched {
 		err := validateInputURL(raw)
 		unsupported.Get, unsupported.Stat, unsupported.List = err, err, err
+	}
+	if raw, matched := s3.mountedWriteURL(url); matched {
+		err := validateInputURL(raw)
+		unsupported.Put, unsupported.Join = err, err
 	}
 	return unsupported
 }

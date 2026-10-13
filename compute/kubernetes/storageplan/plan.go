@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/storage"
@@ -22,10 +23,11 @@ import (
 )
 
 const (
-	planVersion = 3
-	Annotation  = "funnel.calypr.org/storage-plan"
-	Env         = "FUNNEL_KUBERNETES_STORAGE_PLAN"
-	Finalizer   = "funnel.calypr.org/storage-cleanup"
+	planVersion    = 4
+	s3WriteTimeout = 3 * time.Hour
+	Annotation     = "funnel.calypr.org/storage-plan"
+	Env            = "FUNNEL_KUBERNETES_STORAGE_PLAN"
+	Finalizer      = "funnel.calypr.org/storage-cleanup"
 )
 
 // Plan records the resolved mounts and the exact names of task-owned resources.
@@ -39,6 +41,7 @@ type Plan struct {
 	WorkerContainer   string
 	ExecutorContainer string
 	S3ReadMounts      []storage.S3ReadMount
+	S3WriteMounts     []storage.S3WriteMount
 	Volumes           []corev1.Volume
 	WorkerMounts      []corev1.VolumeMount
 	OwnedClaims       []string
@@ -47,14 +50,14 @@ type Plan struct {
 	PersistentVolumes []*corev1.PersistentVolume      `json:"-"`
 }
 
-// Resolve returns nil when Kubernetes storage is absent and no S3 reads are mounted.
+// Resolve returns nil when Kubernetes storage and all S3 mounted routes are absent.
 func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	if conf == nil {
 		return nil, nil
 	}
 	if conf.Kubernetes == nil || conf.Kubernetes.Storage == nil {
-		if hasS3MountedReads(conf.GenericS3) {
-			return nil, fmt.Errorf("S3 mounted reads require Kubernetes.Storage")
+		if hasS3MountedReads(conf.GenericS3) || hasS3MountedWrites(conf.GenericS3) {
+			return nil, fmt.Errorf("S3 mounted reads or writes require Kubernetes.Storage")
 		}
 		return nil, nil
 	}
@@ -77,6 +80,10 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	s3WriteMounts, err := resolveS3WriteMounts(conf.GenericS3, mountsByName)
+	if err != nil {
+		return nil, err
+	}
 	p := &Plan{
 		Version:           planVersion,
 		TaskID:            task.Id,
@@ -86,6 +93,7 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		WorkerContainer:   storageConfig.WorkerContainer,
 		ExecutorContainer: storageConfig.ExecutorContainer,
 		S3ReadMounts:      s3ReadMounts,
+		S3WriteMounts:     s3WriteMounts,
 		WorkerMounts:      workerMounts,
 	}
 	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
@@ -203,6 +211,15 @@ func hasS3MountedReads(backends []*config.GenericS3Storage) bool {
 	return false
 }
 
+func hasS3MountedWrites(backends []*config.GenericS3Storage) bool {
+	for _, backend := range backends {
+		if backend != nil && backend.MountedWrite != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.VolumeMount, map[string]corev1.VolumeMount, error) {
 	workerMounts := make([]corev1.VolumeMount, 0)
 	mountsByName := make(map[string]corev1.VolumeMount)
@@ -287,6 +304,62 @@ func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByName map[s
 		return nil, fmt.Errorf("GenericS3 mounted reads: %w", err)
 	}
 	return readMounts, nil
+}
+
+func resolveS3WriteMounts(backends []*config.GenericS3Storage, mountsByName map[string]corev1.VolumeMount) ([]storage.S3WriteMount, error) {
+	writeMounts := make([]storage.S3WriteMount, 0)
+	for _, backend := range backends {
+		if backend == nil || backend.MountedWrite == nil {
+			continue
+		}
+		if !backend.Valid() {
+			return nil, fmt.Errorf("S3 mounted write backend %q is disabled or invalid", backend.Bucket)
+		}
+		if backend.Bucket == "" {
+			return nil, fmt.Errorf("S3 mounted write requires a bucket")
+		}
+		matches := 0
+		for _, candidate := range backends {
+			if candidate != nil && candidate.Valid() && candidate.Endpoint == backend.Endpoint && candidate.Bucket == backend.Bucket {
+				matches++
+			}
+		}
+		if matches > 1 {
+			return nil, fmt.Errorf("duplicate mounted S3 backend %q bucket %q", backend.Endpoint, backend.Bucket)
+		}
+		workerMount := backend.MountedWrite.WorkerMount
+		if len(validation.IsDNS1123Label(workerMount)) != 0 {
+			return nil, fmt.Errorf("S3 mounted write has invalid worker mount reference %q", workerMount)
+		}
+		mount, exists := mountsByName[workerMount]
+		if !exists {
+			return nil, fmt.Errorf("S3 mounted write references unknown worker mount %q", workerMount)
+		}
+		if mount.ReadOnly {
+			return nil, fmt.Errorf("S3 mounted write worker mount %q must be writable", workerMount)
+		}
+		timeout := s3WriteTimeout
+		if configured := backend.MountedWrite.Timeout; configured != nil {
+			if err := configured.CheckValid(); err != nil {
+				return nil, fmt.Errorf("S3 mounted write timeout: %w", err)
+			}
+			timeout = configured.AsDuration()
+			if timeout <= 0 {
+				return nil, fmt.Errorf("S3 mounted write timeout must be positive")
+			}
+		}
+		writeMounts = append(writeMounts, storage.S3WriteMount{
+			Endpoint: backend.Endpoint,
+			Bucket:   backend.Bucket,
+			Prefix:   backend.MountedWrite.Prefix,
+			Root:     mount.MountPath,
+			Timeout:  timeout,
+		})
+	}
+	if err := storage.ValidateS3WriteMounts(writeMounts); err != nil {
+		return nil, fmt.Errorf("GenericS3 mounted writes: %w", err)
+	}
+	return writeMounts, nil
 }
 
 func render(raw string, data map[string]interface{}, target interface{}) error {
@@ -443,6 +516,21 @@ func (p *Plan) validate() error {
 	for _, readMount := range p.S3ReadMounts {
 		if !mountRoots[readMount.Root] {
 			return fmt.Errorf("S3 mounted read root %q does not match an explicit worker mount", readMount.Root)
+		}
+	}
+	if err := storage.ValidateS3WriteMounts(p.S3WriteMounts); err != nil {
+		return fmt.Errorf("invalid S3 write mounts: %w", err)
+	}
+	writableMountRoots := make(map[string]bool)
+	for _, mount := range p.WorkerMounts {
+		volume := volumes[mount.Name]
+		if !mount.ReadOnly && volume.PersistentVolumeClaim != nil && !volume.PersistentVolumeClaim.ReadOnly {
+			writableMountRoots[mount.MountPath] = true
+		}
+	}
+	for _, writeMount := range p.S3WriteMounts {
+		if !writableMountRoots[writeMount.Root] {
+			return fmt.Errorf("S3 mounted write root %q must match an explicit writable worker mount", writeMount.Root)
 		}
 	}
 	return nil

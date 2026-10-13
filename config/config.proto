@@ -306,6 +306,7 @@ message GenericS3Storage {
   // https://github.com/awslabs/mountpoint-s3/blob/v1.20.0/doc/CONFIGURATION.md#data-encryption
   string AccountID = 8;
   S3MountedRead MountedRead = 9;
+  S3MountedWrite MountedWrite = 10;
 }
 
 // S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker.
@@ -313,6 +314,16 @@ message S3MountedRead {
   string WorkerMount = 1;
   // Prefix is bucket-relative. An empty prefix mounts the whole bucket.
   string Prefix = 2;
+}
+
+// S3MountedWrite configures output publication through a writable Kubernetes worker mount.
+message S3MountedWrite {
+  string WorkerMount = 1;
+  // Prefix is bucket-relative. An empty prefix mounts the whole bucket.
+  string Prefix = 2;
+  // Timeout bounds object visibility polling after a worker copies output files.
+  // A nil value uses the default timeout.
+  google.protobuf.Duration Timeout = 3;
 }
 
 // SwiftStorage configures the OpenStack Swift object storage backend.

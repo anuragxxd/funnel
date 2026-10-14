@@ -13,6 +13,7 @@ import (
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/logger"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
@@ -23,14 +24,15 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mount, "input"), []byte("submitted mount"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	submitted.Kubernetes.Storage = &config.KubernetesStorage{
-		WorkspaceVolume: "workspace",
-		Bindings: []*config.KubernetesStorageBinding{
-			{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "submitted-claim"}},
-			{Name: "reference", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "reference-claim"}, WorkerMounts: []*config.KubernetesWorkerMount{{Name: "reference-input", Mount: fmt.Sprintf("mountPath: %q\nreadOnly: true", mount)}}},
-		},
-	}
-	submitted.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{Prefix: "ref", WorkerMount: "reference-input"}}}
+	submitted.Kubernetes.Storage = nativeWorkerStorage(t, fmt.Sprintf(`{
+ "WorkspaceVolume":"workspace",
+ "volumes":[
+  {"name":"workspace","persistentVolumeClaim":{"claimName":"submitted-claim"}},
+  {"name":"reference","persistentVolumeClaim":{"claimName":"reference-claim"}}
+ ],
+ "volumeMounts":[{"name":"reference","mountPath":%q,"readOnly":true}]
+ }`, mount))
+	submitted.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{Prefix: "ref", Volume: "reference"}}}
 	plan, err := storageplan.Resolve(&tes.Task{Id: "snapshot-test"}, submitted)
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +50,7 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	conf.Worker.WorkDir = "/different-work"
 	conf.Kubernetes.JobsNamespace = "different-tasks"
 	conf.Kubernetes.Storage = &config.KubernetesStorage{}
-	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "new-key", Secret: "new-secret", MountedRead: &config.S3MountedRead{Prefix: "wrong", WorkerMount: "unknown-static-mount"}}}
+	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "new-key", Secret: "new-secret", MountedRead: &config.S3MountedRead{Prefix: "wrong", Volume: "unknown-static-mount"}}}
 	opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"snapshot-test","executors":[{"image":"alpine:3.21","command":["true"]}]}`))}
 	w, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 	if err != nil {
@@ -69,7 +71,7 @@ func TestWorkerUsesSubmittedStorageSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "submitted mount" || conf.GenericS3[0].MountedRead.WorkerMount != "unknown-static-mount" {
+	if string(data) != "submitted mount" || conf.GenericS3[0].MountedRead.Volume != "unknown-static-mount" {
 		t.Fatal("worker did not use the submitted mount independently of its static config")
 	}
 }
@@ -81,7 +83,7 @@ func TestWorkerRejectsMountedReadWithoutSubmittedPlan(t *testing.T) {
 			conf := config.DefaultConfig()
 			conf.Compute = compute
 			conf.EventWriters = nil
-			conf.GenericS3 = []*config.GenericS3Storage{{MountedRead: &config.S3MountedRead{WorkerMount: "reference"}}}
+			conf.GenericS3 = []*config.GenericS3Storage{{MountedRead: &config.S3MountedRead{Volume: "reference"}}}
 			opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"task","executors":[{"image":"alpine","command":["true"]}]}`))}
 			_, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 			if err == nil || !strings.Contains(err.Error(), "requires a submitted Kubernetes storage plan") {
@@ -98,7 +100,7 @@ func TestWorkerEmptySnapshotDoesNotActivateStaticMountedRead(t *testing.T) {
 	conf.AmazonS3.Disabled = true
 	conf.GoogleStorage.Disabled = true
 	conf.Kubernetes.JobsNamespace = "tasks"
-	conf.Kubernetes.Storage = &config.KubernetesStorage{WorkspaceVolume: "workspace", Bindings: []*config.KubernetesStorageBinding{{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "workspace"}}}}
+	conf.Kubernetes.Storage = nativeWorkerStorage(t, `{"WorkspaceVolume":"workspace","volumes":[{"name":"workspace","persistentVolumeClaim":{"claimName":"workspace"}}]}`)
 	plan, err := storageplan.Resolve(&tes.Task{Id: "snapshot-test"}, conf)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +110,7 @@ func TestWorkerEmptySnapshotDoesNotActivateStaticMountedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(storageplan.Env, snapshot)
-	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{WorkerMount: "missing"}, MountedWrite: &config.S3MountedWrite{WorkerMount: "missing-output"}}}
+	conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "bucket", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{Volume: "missing"}, MountedWrite: &config.S3MountedWrite{Volume: "missing-output"}}}
 	opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"snapshot-test","executors":[{"image":"alpine","command":["true"]}]}`))}
 	w, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 	if err != nil {
@@ -127,7 +129,7 @@ func TestWorkerRejectsMountedWriteWithoutSubmittedPlan(t *testing.T) {
 			conf := config.DefaultConfig()
 			conf.Compute = compute
 			conf.EventWriters = nil
-			conf.GenericS3 = []*config.GenericS3Storage{{MountedWrite: &config.S3MountedWrite{WorkerMount: "outputs"}}}
+			conf.GenericS3 = []*config.GenericS3Storage{{MountedWrite: &config.S3MountedWrite{Volume: "outputs"}}}
 			opts := &Options{TaskBase64: base64.StdEncoding.EncodeToString([]byte(`{"id":"task","executors":[{"image":"alpine","command":["true"]}]}`))}
 			_, err := NewWorker(context.Background(), conf, logger.NewLogger("test", logger.DefaultConfig()), opts)
 			if err == nil || !strings.Contains(err.Error(), "requires a submitted Kubernetes storage plan") {
@@ -135,4 +137,13 @@ func TestWorkerRejectsMountedWriteWithoutSubmittedPlan(t *testing.T) {
 			}
 		})
 	}
+}
+
+func nativeWorkerStorage(t *testing.T, raw string) *config.KubernetesStorage {
+	t.Helper()
+	result := &config.KubernetesStorage{}
+	if err := protojson.Unmarshal([]byte(raw), result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

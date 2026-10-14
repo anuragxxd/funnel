@@ -3,6 +3,7 @@ syntax = "proto3";
 package config;
 
 import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
 import "logger/logger.proto";
 
 option go_package = "github.com/ohsu-comp-bio/funnel/config";
@@ -311,19 +312,29 @@ message GenericS3Storage {
 
 // S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker.
 message S3MountedRead {
-  string WorkerMount = 1;
+  reserved 1;
+  reserved "WorkerMount";
   // Prefix is bucket-relative. An empty prefix mounts the whole bucket.
   string Prefix = 2;
+  string Volume = 3;
+  oneof MountView {
+    string SubPath = 4;
+  }
 }
 
 // S3MountedWrite configures output publication through a writable Kubernetes worker mount.
 message S3MountedWrite {
-  string WorkerMount = 1;
+  reserved 1;
+  reserved "WorkerMount";
   // Prefix is bucket-relative. An empty prefix mounts the whole bucket.
   string Prefix = 2;
   // Timeout bounds object visibility polling after a worker copies output files.
   // A nil value uses the default timeout.
   google.protobuf.Duration Timeout = 3;
+  string Volume = 4;
+  oneof MountView {
+    string SubPath = 5;
+  }
 }
 
 // SwiftStorage configures the OpenStack Swift object storage backend.
@@ -399,15 +410,12 @@ message Kubernetes {
   KubernetesStorage Storage = 25;
 }
 
-// KubernetesStorage describes named volume bindings shared by the worker and
-// its executor pods. Each binding selects either an existing claim or native
-// YAML templates for a per-task PVC and optional PV.
+// KubernetesStorage describes native Kubernetes storage resources and mounts.
 message KubernetesStorage {
-  reserved 5;
-  reserved "MountedInputs";
+  reserved 2, 5;
+  reserved "Bindings", "MountedInputs";
 
   string WorkspaceVolume = 1;
-  repeated KubernetesStorageBinding Bindings = 2;
   // WorkerContainer selects the worker container receiving generated mounts
   // and plan environment. It may be empty when the pod has one regular
   // container; set it when the pod has multiple regular containers.
@@ -416,35 +424,10 @@ message KubernetesStorage {
   // mounts. It may be empty when the pod has one regular
   // container; set it when the pod has multiple regular containers.
   string ExecutorContainer = 4;
-}
-
-// KubernetesStorageBinding names a volume source and the native mounts to add
-// to worker pods. Executor pods derive their mounts from the task's volumes.
-message KubernetesStorageBinding {
-  string Name = 1;
-
-  oneof Source {
-    string ExistingClaim = 2;
-    KubernetesStorageTemplates Templates = 3;
-  }
-
-  reserved 4;
-
-  // WorkerMounts contains named native Kubernetes volumeMount YAML snippets.
-  // The planner sets each mount's volume name to the binding's Name.
-  repeated KubernetesWorkerMount WorkerMounts = 5;
-}
-
-// KubernetesWorkerMount gives a native worker mount a stable logical name.
-message KubernetesWorkerMount {
-  string Name = 1;
-  string Mount = 2;
-}
-
-// KubernetesStorageTemplates contains native Kubernetes YAML resource bodies.
-message KubernetesStorageTemplates {
-  string PVC = 1;
-  string PV = 2;
+  repeated google.protobuf.Struct volumes = 6;
+  repeated google.protobuf.Struct volumeMounts = 7;
+  repeated google.protobuf.Struct volumeClaimTemplates = 8;
+  repeated google.protobuf.Struct persistentVolumeTemplates = 9;
 }
 
 // KubernetesResources describes default and maximum resource limits for Kubernetes tasks.

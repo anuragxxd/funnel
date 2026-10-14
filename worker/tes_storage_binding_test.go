@@ -37,14 +37,21 @@ func TestTESRequestStagesIdenticallyAcrossStorageBindings(t *testing.T) {
 			conf := config.DefaultConfig()
 			conf.Kubernetes.JobsNamespace = "tasks"
 			conf.Worker.WorkDir = t.TempDir()
-			conf.Kubernetes.Storage = &config.KubernetesStorage{
-				WorkspaceVolume: "workspace",
-				Bindings: []*config.KubernetesStorageBinding{
-					{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: deployment + "-workspace"}},
-					{Name: "reference", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: deployment + "-reference"}, WorkerMounts: []*config.KubernetesWorkerMount{{Name: "reference-view", Mount: fmt.Sprintf("mountPath: %q\nsubPath: release-1\nreadOnly: true", mountRoot)}}},
-				},
+			conf.Kubernetes.Storage = &config.KubernetesStorage{}
+			if err := protojson.Unmarshal([]byte(fmt.Sprintf(`{
+ "WorkspaceVolume":"workspace",
+ "volumes":[
+  {"name":"workspace","persistentVolumeClaim":{"claimName":%q}},
+  {"name":"reference","persistentVolumeClaim":{"claimName":%q}}
+ ],
+ "volumeMounts":[
+ {"name":"reference","mountPath":%q,"subPath":"release-1","readOnly":true},
+ {"name":"reference","mountPath":%q,"subPath":"release-2","readOnly":true}
+ ]
+ }`, deployment+"-workspace", deployment+"-reference", mountRoot, mountRoot+"-other")), conf.Kubernetes.Storage); err != nil {
+				t.Fatal(err)
 			}
-			conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "reference", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{WorkerMount: "reference-view"}}}
+			conf.GenericS3 = []*config.GenericS3Storage{{Endpoint: "http://s3.invalid", Bucket: "reference", Key: "key", Secret: "secret", MountedRead: &config.S3MountedRead{Volume: "reference", MountView: &config.S3MountedRead_SubPath{SubPath: "release-1"}}}}
 			conf.AmazonS3.Disabled = true
 			conf.GoogleStorage.Disabled = true
 			plan, err := storageplan.Resolve(task, conf)

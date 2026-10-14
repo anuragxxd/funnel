@@ -11,75 +11,103 @@ import (
 	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 )
+
+func object(values map[string]interface{}) *structpb.Struct {
+	result, err := structpb.NewStruct(values)
+	if err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func nativeYAML(t *testing.T, raw string) *structpb.Struct {
+	t.Helper()
+	data, err := yaml.YAMLToJSONStrict([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]interface{}
+	if err := json.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	return object(values)
+}
 
 func existingConfig() *config.Config {
 	c := config.DefaultConfig()
 	c.Kubernetes.JobsNamespace = "jobs"
 	c.Worker.WorkDir = "/work"
-	c.Kubernetes.Storage = &config.KubernetesStorage{WorkspaceVolume: "workspace", Bindings: []*config.KubernetesStorageBinding{{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"}}}}
+	c.Kubernetes.Storage = &config.KubernetesStorage{
+		WorkspaceVolume: "workspace",
+		Volumes: []*structpb.Struct{
+			object(map[string]interface{}{
+				"name":                  "workspace",
+				"persistentVolumeClaim": map[string]interface{}{"claimName": "shared-data"},
+			}),
+		},
+	}
 	return c
 }
 
-func namedMount(name, raw string) *config.KubernetesWorkerMount {
-	return &config.KubernetesWorkerMount{Name: name, Mount: raw}
+func addVolume(c *config.Config, name, claim string) {
+	c.Kubernetes.Storage.Volumes = append(c.Kubernetes.Storage.Volumes, object(map[string]interface{}{
+		"name": name, "persistentVolumeClaim": map[string]interface{}{"claimName": claim},
+	}))
 }
 
-func mountedS3(bucket, prefix, workerMount string) *config.GenericS3Storage {
+func setVolume(c *config.Config, index int, name, claim string) {
+	c.Kubernetes.Storage.Volumes[index] = object(map[string]interface{}{
+		"name": name, "persistentVolumeClaim": map[string]interface{}{"claimName": claim},
+	})
+}
+
+func addMount(c *config.Config, volume, mountPath string, extra map[string]interface{}) {
+	mount := map[string]interface{}{"name": volume, "mountPath": mountPath}
+	for key, value := range extra {
+		mount[key] = value
+	}
+	c.Kubernetes.Storage.VolumeMounts = append(c.Kubernetes.Storage.VolumeMounts, object(mount))
+}
+
+func mountedS3(bucket, prefix, volume string) *config.GenericS3Storage {
 	return &config.GenericS3Storage{
 		Endpoint: "https://s3.example.test/custom/path",
-		Key:      "access-key",
-		Secret:   "access-secret",
-		Bucket:   bucket,
-		MountedRead: &config.S3MountedRead{
-			WorkerMount: workerMount,
-			Prefix:      prefix,
-		},
+		Key:      "access-key", Secret: "access-secret", Bucket: bucket,
+		MountedRead: &config.S3MountedRead{Volume: volume, Prefix: prefix},
 	}
 }
 
-func mountedS3Write(bucket, prefix, workerMount string, timeout *durationpb.Duration) *config.GenericS3Storage {
-	backend := mountedS3(bucket, prefix, workerMount)
+func mountedS3Write(bucket, prefix, volume string, timeout *durationpb.Duration) *config.GenericS3Storage {
+	backend := mountedS3(bucket, prefix, volume)
 	backend.MountedRead = nil
-	backend.MountedWrite = &config.S3MountedWrite{WorkerMount: workerMount, Prefix: prefix, Timeout: timeout}
+	backend.MountedWrite = &config.S3MountedWrite{Volume: volume, Prefix: prefix, Timeout: timeout}
 	return backend
 }
 
-const pvcTemplate = `apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: claim-{{.TaskId}}
-spec:
-  accessModes: [ReadWriteMany]
-  storageClassName: fast
-  resources:
-    requests:
-      storage: 5Gi
-`
+func withReadSubPath(backend *config.GenericS3Storage, subPath string) {
+	backend.MountedRead.MountView = &config.S3MountedRead_SubPath{SubPath: subPath}
+}
 
-const pvTemplate = `apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: disk-{{.TaskId}}
-spec:
-  capacity:
-    storage: 5Gi
-  accessModes: [ReadWriteMany]
-  storageClassName: fast
-  persistentVolumeReclaimPolicy: Retain
-  csi:
-    driver: example.csi
-    volumeHandle: handle-{{.TaskId}}
-    volumeAttributes:
-      bucket: native-bucket
-`
+func withWriteSubPath(backend *config.GenericS3Storage, subPath string) {
+	backend.MountedWrite.MountView = &config.S3MountedWrite_SubPath{SubPath: subPath}
+}
+
+const pvcTemplate = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: claim-{{.TaskId}}\nspec:\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
+
+const pairedPVC = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: claim-{{.TaskId}}\nspec:\n  volumeName: disk-{{.TaskId}}\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
+
+const pvTemplate = "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: disk-{{.TaskId}}\nspec:\n  capacity:\n    storage: 5Gi\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  persistentVolumeReclaimPolicy: Retain\n  csi:\n    driver: example.csi\n    volumeHandle: handle-{{.TaskId}}\n    volumeAttributes:\n      bucket: native-bucket\n"
 
 func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{Name: "cache", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-cache"}, WorkerMounts: []*config.KubernetesWorkerMount{namedMount("cache-view", "mountPath: /cache\nreadOnly: true\nsubPath: cache")}})
+	addVolume(c, "cache", "shared-cache")
+	addMount(c, "cache", "/cache", map[string]interface{}{"readOnly": true, "subPath": "cache"})
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -92,11 +120,11 @@ func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(worker.Spec.Template.Spec.Volumes) != 2 {
-		t.Fatal("worker did not receive both bindings")
+		t.Fatal("worker did not receive both PVC volumes")
 	}
 	workerMount := worker.Spec.Template.Spec.Containers[0].VolumeMounts[0]
 	if workerMount.MountPath != "/work/task-123" || workerMount.SubPath != "task-123" {
-		t.Fatalf("bad worker mount: %+v", workerMount)
+		t.Fatalf("bad workspace mount: %+v", workerMount)
 	}
 	snapshot := worker.Annotations[Annotation]
 	if env := worker.Spec.Template.Spec.Containers[0].Env[0]; env.Name != Env || env.Value != snapshot {
@@ -106,8 +134,8 @@ func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(p, restarted) {
-		t.Fatal("snapshot lost native plan fields")
+	if snapshot, err := restarted.Encode(); err != nil || snapshot != worker.Annotations[Annotation] {
+		t.Fatalf("snapshot did not round trip: %s, %v", snapshot, err)
 	}
 	executor := testJob()
 	if err := restarted.ApplyExecutor(executor, "task-123", []corev1.VolumeMount{{MountPath: "/data/input", ReadOnly: true}, {MountPath: "/results"}}); err != nil {
@@ -124,7 +152,7 @@ func TestExistingClaimWorkerExecutorSnapshot(t *testing.T) {
 
 func TestWorkspaceAllowsReadOnlyRootView(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("bucket-view", "mountPath: /bucket\nreadOnly: true")}
+	addMount(c, "workspace", "/bucket", map[string]interface{}{"readOnly": true})
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -135,36 +163,32 @@ func TestWorkspaceAllowsReadOnlyRootView(t *testing.T) {
 	}
 	mounts := job.Spec.Template.Spec.Containers[0].VolumeMounts
 	if len(mounts) != 2 || mounts[0].ReadOnly || mounts[0].SubPath != "task-123" || !mounts[1].ReadOnly || mounts[1].SubPath != "" || mounts[1].MountPath != "/bucket" {
-		t.Fatalf("workspace and root view must preserve their separate access settings: %+v", mounts)
+		t.Fatalf("workspace and root view access changed: %+v", mounts)
 	}
 }
 
 func TestS3ReadMountTracksNativeMountPathAndSnapshot(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
-		namedMount("reference-view", "mountPath: /reference\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"),
-	}
-	c.GenericS3 = []*config.GenericS3Storage{mountedS3("reference-bucket", "reference/", "reference-view")}
+	addMount(c, "workspace", "/reference", map[string]interface{}{"readOnly": true, "subPathExpr": "reference-$(POD_NAME)"})
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3("reference-bucket", "reference/", "workspace")}
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReadMount := storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "reference-bucket", Prefix: "reference/", Root: "/reference"}
-	if len(p.S3ReadMounts) != 1 || p.S3ReadMounts[0] != wantReadMount {
-		t.Fatalf("S3 read mount did not preserve configured values and native root: %+v", p.S3ReadMounts)
+	want := storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "reference-bucket", Prefix: "reference/", Root: "/reference"}
+	if len(p.S3ReadMounts) != 1 || p.S3ReadMounts[0] != want {
+		t.Fatalf("S3 read identity or native root changed: %+v", p.S3ReadMounts)
 	}
 	if len(p.WorkerMounts) != 1 || p.WorkerMounts[0].MountPath != "/reference" || p.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" || !p.WorkerMounts[0].ReadOnly {
 		t.Fatalf("native mount fields changed: %+v", p.WorkerMounts)
 	}
-
 	worker := testJob()
 	if err := p.ApplyWorker(worker, "/work", "task-123"); err != nil {
 		t.Fatal(err)
 	}
 	if mount := worker.Spec.Template.Spec.Containers[0].VolumeMounts[1]; mount.MountPath != "/reference" || mount.SubPathExpr != "reference-$(POD_NAME)" {
-		t.Fatalf("rendered worker mount changed: %+v", mount)
+		t.Fatalf("worker mount changed: %+v", mount)
 	}
-
 	snapshot, err := p.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -172,503 +196,339 @@ func TestS3ReadMountTracksNativeMountPathAndSnapshot(t *testing.T) {
 	if strings.Contains(snapshot, "access-key") || strings.Contains(snapshot, "access-secret") {
 		t.Fatalf("storage snapshot contains S3 credentials: %s", snapshot)
 	}
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /changed"
-	c.GenericS3[0].MountedRead.Prefix = "changed/"
-	c.GenericS3[0].Endpoint = "https://changed.example.test"
 	restored, err := Decode(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.S3ReadMounts[0] != wantReadMount || restored.WorkerMounts[0].MountPath != "/reference" || restored.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" {
-		t.Fatalf("snapshot changed after config mutation: reads=%+v mounts=%+v", restored.S3ReadMounts, restored.WorkerMounts)
-	}
-
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0].Mount = "mountPath: /renamed\nreadOnly: true\nsubPathExpr: reference-$(POD_NAME)"
-	c.GenericS3[0].MountedRead.Prefix = "reference/"
-	c.GenericS3[0].Endpoint = wantReadMount.Endpoint
-	renamed, err := Resolve(&tes.Task{Id: "task-123"}, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if renamed.S3ReadMounts[0].Root != "/renamed" || renamed.WorkerMounts[0].MountPath != "/renamed" {
-		t.Fatalf("renamed mount path did not update S3 read mount and worker mount: reads=%+v mounts=%+v", renamed.S3ReadMounts, renamed.WorkerMounts)
+	if restored.S3ReadMounts[0] != want || restored.WorkerMounts[0].SubPathExpr != "reference-$(POD_NAME)" {
+		t.Fatalf("snapshot lost S3 or mount identity: %+v", restored)
 	}
 }
 
-func TestS3MountedReadsResolveByNameRegardlessOfMountOrder(t *testing.T) {
+func TestS3MountSelectionByVolumeAndSubPath(t *testing.T) {
+	t.Run("unique volume without selector allows subPathExpr", func(t *testing.T) {
+		c := existingConfig()
+		addMount(c, "workspace", "/reference", map[string]interface{}{"subPathExpr": "pod-$(POD_NAME)"})
+		c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "prefix/", "workspace")}
+		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.S3ReadMounts[0].Root != "/reference" {
+			t.Fatalf("selected root = %q", p.S3ReadMounts[0].Root)
+		}
+	})
+	t.Run("ambiguous volume without selector fails", func(t *testing.T) {
+		c := existingConfig()
+		addMount(c, "workspace", "/reference-a", map[string]interface{}{"subPath": "a"})
+		addMount(c, "workspace", "/reference-b", map[string]interface{}{"subPath": "b"})
+		c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "prefix/", "workspace")}
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "specify SubPath") {
+			t.Fatalf("ambiguous S3 volume accepted: %v", err)
+		}
+	})
+	t.Run("explicit empty subPath selects root mount", func(t *testing.T) {
+		c := existingConfig()
+		addMount(c, "workspace", "/reference-root", nil)
+		addMount(c, "workspace", "/reference-child", map[string]interface{}{"subPath": "child"})
+		backend := mountedS3("bucket", "prefix/", "workspace")
+		withReadSubPath(backend, "")
+		c.GenericS3 = []*config.GenericS3Storage{backend}
+		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.S3ReadMounts[0].Root != "/reference-root" {
+			t.Fatalf("empty selector selected wrong root: %+v", p.S3ReadMounts[0])
+		}
+	})
+	t.Run("selector rejects subPathExpr", func(t *testing.T) {
+		c := existingConfig()
+		addMount(c, "workspace", "/reference", map[string]interface{}{"subPathExpr": "pod-$(POD_NAME)"})
+		backend := mountedS3("bucket", "prefix/", "workspace")
+		withReadSubPath(backend, "")
+		c.GenericS3 = []*config.GenericS3Storage{backend}
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "no static mount") {
+			t.Fatalf("dynamic mount matched static selector: %v", err)
+		}
+	})
+}
+
+func TestS3MountedReadValidationAndIdentityOrder(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
-		namedMount("protein-view", "mountPath: /views/protein"),
-		namedMount("reads-view", "mountPath: /views/reads"),
-	}
-	c.GenericS3 = []*config.GenericS3Storage{
-		mountedS3("reads-bucket", "reads/", "reads-view"),
-		mountedS3("protein-bucket", "protein/", "protein-view"),
-	}
-	first, err := Resolve(&tes.Task{Id: "task-123"}, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.S3ReadMounts[0] != (storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "reads-bucket", Prefix: "reads/", Root: "/views/reads"}) || first.S3ReadMounts[1] != (storage.S3ReadMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "protein-bucket", Prefix: "protein/", Root: "/views/protein"}) {
-		t.Fatalf("named S3 read mounts resolved incorrectly: %+v", first.S3ReadMounts)
+	c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{object(map[string]interface{}{"metadata": map[string]interface{}{"name": "unused"}})}
+	c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "missing")}
+	if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "unknown worker volume") {
+		t.Fatalf("template parsing preceded S3 identity validation: %v", err)
 	}
 
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts[0], c.Kubernetes.Storage.Bindings[0].WorkerMounts[1] = c.Kubernetes.Storage.Bindings[0].WorkerMounts[1], c.Kubernetes.Storage.Bindings[0].WorkerMounts[0]
-	second, err := Resolve(&tes.Task{Id: "task-123"}, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(first.S3ReadMounts, second.S3ReadMounts) {
-		t.Fatalf("mount list order changed name-based S3 reads: first=%+v second=%+v", first.S3ReadMounts, second.S3ReadMounts)
-	}
-}
-
-func TestInvalidS3MountedReadsFailDuringResolution(t *testing.T) {
 	tests := []struct {
 		name   string
 		change func(*config.Config)
 		want   string
 	}{
-		{
-			name: "unknown reference before template parsing",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: "invalid"}}
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "missing-view")}
-			},
-			want: "unknown worker mount",
-		},
-		{
-			name: "duplicate name",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /one"), namedMount("same-view", "mountPath: /two")}
-			},
-			want: "duplicate worker mount name",
-		},
-		{
-			name: "duplicate across bindings",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /one")}
-				c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{Name: "cache", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-cache"}, WorkerMounts: []*config.KubernetesWorkerMount{namedMount("same-view", "mountPath: /two")}})
-			},
-			want: "duplicate worker mount name",
-		},
-		{
-			name: "invalid name",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("bad/name", "mountPath: /one")}
-			},
-			want: "invalid worker mount name",
-		},
-		{
-			name: "invalid reference name",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "bad/name")}
-			},
-			want: "invalid worker mount reference",
-		},
-		{
-			name: "nil named mount",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{nil}
-			},
-			want: "nil worker mount",
-		},
-		{
-			name: "disabled S3 backend",
-			change: func(c *config.Config) {
-				backend := mountedS3("bucket", "input/", "input-view")
-				backend.Disabled = true
-				c.GenericS3 = []*config.GenericS3Storage{backend}
-			},
-			want: "disabled or invalid",
-		},
-		{
-			name: "invalid S3 backend",
-			change: func(c *config.Config) {
-				backend := mountedS3("bucket", "input/", "input-view")
-				backend.Secret = ""
-				c.GenericS3 = []*config.GenericS3Storage{backend}
-			},
-			want: "disabled or invalid",
-		},
-		{
-			name: "missing bucket",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3("", "input/", "input-view")}
-			},
-			want: "requires a bucket",
-		},
-		{
-			name: "duplicate API-only backend identity",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input")}
-				other := mountedS3("bucket", "", "")
-				other.MountedRead = nil
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view"), other}
-			},
-			want: "duplicate mounted S3 backend",
-		},
-		{
-			name: "duplicate endpoint and bucket",
-			change: func(c *config.Config) {
-				c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input"), namedMount("other-view", "mountPath: /other")}
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view"), mountedS3("bucket", "other/", "other-view")}
-			},
-		},
+		{"disabled", func(c *config.Config) {
+			b := mountedS3("bucket", "input/", "workspace")
+			b.Disabled = true
+			c.GenericS3 = []*config.GenericS3Storage{b}
+		}, "disabled or invalid"},
+		{"missing bucket", func(c *config.Config) { c.GenericS3 = []*config.GenericS3Storage{mountedS3("", "input/", "workspace")} }, "requires a bucket"},
+		{"unknown volume", func(c *config.Config) {
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "missing")}
+		}, "unknown worker volume"},
+		{"invalid volume", func(c *config.Config) {
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "bad/name")}
+		}, "invalid volume reference"},
+		{"duplicate API-only identity", func(c *config.Config) {
+			other := mountedS3("bucket", "", "")
+			other.MountedRead = nil
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "workspace"), other}
+		}, "duplicate mounted S3 backend"},
+		{"duplicate endpoint and bucket", func(c *config.Config) {
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "one/", "workspace"), mountedS3("bucket", "two/", "workspace")}
+		}, "duplicate mounted S3 backend"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := existingConfig()
 			tt.change(c)
-			_, err := Resolve(&tes.Task{Id: "task-123"}, c)
-			if err == nil || (tt.want != "" && !strings.Contains(err.Error(), tt.want)) {
-				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
 			}
 		})
 	}
-	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("input-view", "mountPath: /input")}
-	c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view")}
-	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.S3ReadMounts[0].Root = "/unmounted"
-	if err := p.validate(); err == nil || !strings.Contains(err.Error(), "does not match an explicit worker mount") {
-		t.Fatalf("uncovered S3 read mount root accepted: %v", err)
-	}
-}
-
-func TestS3MountedReadRequiresKubernetesStorage(t *testing.T) {
 	for _, change := range []func(*config.Config){
 		func(c *config.Config) { c.Kubernetes.Storage = nil },
 		func(c *config.Config) { c.Kubernetes = nil },
 	} {
 		c := existingConfig()
-		c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "input-view")}
+		c.GenericS3 = []*config.GenericS3Storage{mountedS3("bucket", "input/", "workspace")}
 		change(c)
 		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "require Kubernetes.Storage") {
-			t.Fatalf("configured S3 mounted read without Kubernetes.Storage was not rejected: %v", err)
+			t.Fatalf("mounted read without Kubernetes.Storage accepted: %v", err)
 		}
 	}
 }
 
-func TestS3MountedWriteTracksNativeMountAndSnapshot(t *testing.T) {
+func TestS3MountedWriteBehaviorAndValidation(t *testing.T) {
 	c := existingConfig()
-	c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
-		namedMount("output-view", "mountPath: /outputs\nsubPath: task-results"),
-	}
-	c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("results-bucket", "results/", "output-view", nil)}
-
+	addVolume(c, "results", "shared-results")
+	addMount(c, "results", "/outputs", map[string]interface{}{"subPath": "task-results"})
+	backend := mountedS3Write("results-bucket", "results/", "results", nil)
+	withWriteSubPath(backend, "task-results")
+	c.GenericS3 = []*config.GenericS3Storage{backend}
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDefault := storage.S3WriteMount{
-		Endpoint: "https://s3.example.test/custom/path",
-		Bucket:   "results-bucket",
-		Prefix:   "results/",
-		Root:     "/outputs",
-		Timeout:  3 * time.Hour,
-	}
-	if len(p.S3WriteMounts) != 1 || p.S3WriteMounts[0] != wantDefault {
-		t.Fatalf("default S3 write mount mismatch: %+v", p.S3WriteMounts)
-	}
-	if len(p.WorkerMounts) != 1 || p.WorkerMounts[0].MountPath != "/outputs" || p.WorkerMounts[0].SubPath != "task-results" {
-		t.Fatalf("native write mount fields changed: %+v", p.WorkerMounts)
+	want := storage.S3WriteMount{Endpoint: "https://s3.example.test/custom/path", Bucket: "results-bucket", Prefix: "results/", Root: "/outputs", Timeout: 3 * time.Hour}
+	if len(p.S3WriteMounts) != 1 || p.S3WriteMounts[0] != want {
+		t.Fatalf("S3 write mount mismatch: %+v", p.S3WriteMounts)
 	}
 	snapshot, err := p.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(snapshot, "access-key") || strings.Contains(snapshot, "access-secret") {
-		t.Fatalf("storage snapshot contains S3 credentials: %s", snapshot)
+		t.Fatalf("snapshot contains credentials: %s", snapshot)
 	}
-	restored, err := Decode(snapshot)
-	if err != nil {
-		t.Fatal(err)
+	decoded, err := Decode(snapshot)
+	if err != nil || decoded.S3WriteMounts[0] != want {
+		t.Fatalf("snapshot lost S3 write identity: %+v, %v", decoded, err)
 	}
-	if len(restored.S3WriteMounts) != 1 || restored.S3WriteMounts[0] != wantDefault || restored.WorkerMounts[0].SubPath != "task-results" {
-		t.Fatalf("snapshot lost S3 write mount identity or native subpath: %+v", restored)
-	}
-	wrongRoot := *restored
-	wrongRoot.S3WriteMounts = append([]storage.S3WriteMount(nil), restored.S3WriteMounts...)
+	wrongRoot := *decoded
+	wrongRoot.S3WriteMounts = append([]storage.S3WriteMount(nil), decoded.S3WriteMounts...)
 	wrongRoot.S3WriteMounts[0].Root = "/unmounted"
 	if _, err := wrongRoot.Encode(); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
 		t.Fatalf("unmounted S3 write root accepted: %v", err)
 	}
-
-	c.GenericS3[0].MountedWrite.Timeout = durationpb.New(45 * time.Minute)
+	for _, mutate := range []func(map[string]interface{}){
+		func(payload map[string]interface{}) {
+			mounts := payload["WorkerMounts"].([]interface{})
+			mounts[0].(map[string]interface{})["readOnly"] = true
+		},
+		func(payload map[string]interface{}) {
+			volumes := payload["Volumes"].([]interface{})
+			for _, item := range volumes {
+				volume := item.(map[string]interface{})
+				if volume["name"] == "results" {
+					volume["persistentVolumeClaim"].(map[string]interface{})["readOnly"] = true
+				}
+			}
+		},
+	} {
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(snapshot), &payload); err != nil {
+			t.Fatal(err)
+		}
+		mutate(payload)
+		invalid, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Decode(string(invalid)); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
+			t.Fatalf("read-only S3 write snapshot accepted: %v", err)
+		}
+	}
+	backend.MountedWrite.Timeout = durationpb.New(45 * time.Minute)
 	p, err = Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCustom := wantDefault
-	wantCustom.Timeout = 45 * time.Minute
-	if len(p.S3WriteMounts) != 1 || p.S3WriteMounts[0] != wantCustom {
-		t.Fatalf("custom S3 write timeout mismatch: %+v", p.S3WriteMounts)
-	}
-}
-
-func TestS3MountedWriteRequiresWritableMountInConfigAndSnapshot(t *testing.T) {
-	c := existingConfig()
-	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{
-		Name:         "results",
-		Source:       &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "task-results"},
-		WorkerMounts: []*config.KubernetesWorkerMount{namedMount("output-view", "mountPath: /outputs")},
-	})
-	c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("results-bucket", "results/", "output-view", nil)}
-	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
-	if err != nil {
-		t.Fatal(err)
+	want.Timeout = 45 * time.Minute
+	if p.S3WriteMounts[0] != want {
+		t.Fatalf("custom timeout mismatch: %+v", p.S3WriteMounts)
 	}
 
-	c.Kubernetes.Storage.Bindings[1].WorkerMounts[0].Mount = "mountPath: /outputs\nreadOnly: true"
-	if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "must be writable") {
-		t.Fatalf("read-only configured output mount accepted: %v", err)
-	}
-
-	snapshot, err := p.Encode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(snapshot), &payload); err != nil {
-		t.Fatal(err)
-	}
-	mounts := payload["WorkerMounts"].([]any)
-	mounts[0].(map[string]any)["readOnly"] = true
-	readonlySnapshot, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Decode(string(readonlySnapshot)); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
-		t.Fatalf("snapshot with read-only S3 write root accepted: %v", err)
-	}
-
-	if err := json.Unmarshal([]byte(snapshot), &payload); err != nil {
-		t.Fatal(err)
-	}
-	volumes := payload["Volumes"].([]any)
-	foundResultsVolume := false
-	for _, item := range volumes {
-		volume := item.(map[string]any)
-		if volume["name"] == "results" {
-			volume["persistentVolumeClaim"].(map[string]any)["readOnly"] = true
-			foundResultsVolume = true
-		}
-	}
-	if !foundResultsVolume {
-		t.Fatal("snapshot omitted the results volume")
-	}
-	readonlyVolumeSnapshot, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Decode(string(readonlyVolumeSnapshot)); err == nil || !strings.Contains(err.Error(), "writable worker mount") {
-		t.Fatalf("snapshot with read-only S3 write volume accepted: %v", err)
-	}
-}
-
-func TestS3MountedWriteRejectsInvalidConfig(t *testing.T) {
-	tests := []struct {
+	for _, tc := range []struct {
 		name   string
 		change func(*config.Config)
 		want   string
 	}{
-		{
-			name: "disabled backend",
-			change: func(c *config.Config) {
-				backend := mountedS3Write("bucket", "results/", "output-view", nil)
-				backend.Disabled = true
-				c.GenericS3 = []*config.GenericS3Storage{backend}
-			},
-			want: "disabled or invalid",
-		},
-		{
-			name: "missing bucket",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("", "results/", "output-view", nil)}
-			},
-			want: "requires a bucket",
-		},
-		{
-			name: "unknown worker mount",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "missing-view", nil)}
-			},
-			want: "unknown worker mount",
-		},
-		{
-			name: "duplicate API-only backend identity",
-			change: func(c *config.Config) {
-				other := mountedS3Write("bucket", "", "output-view", nil)
-				other.MountedWrite = nil
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", nil), other}
-			},
-			want: "duplicate mounted S3 backend",
-		},
-		{
-			name: "zero timeout",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", durationpb.New(0))}
-			},
-			want: "must be positive",
-		},
-		{
-			name: "negative timeout",
-			change: func(c *config.Config) {
-				c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", durationpb.New(-time.Second))}
-			},
-			want: "must be positive",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := existingConfig()
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{
-				namedMount("output-view", "mountPath: /outputs"),
-			}
-			tt.change(c)
-			_, err := Resolve(&tes.Task{Id: "task-123"}, c)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("error = %v, want substring %q", err, tt.want)
+		{"disabled backend", func(c *config.Config) {
+			b := mountedS3Write("bucket", "output/", "workspace", nil)
+			b.Disabled = true
+			c.GenericS3 = []*config.GenericS3Storage{b}
+		}, "disabled or invalid"},
+		{"missing bucket", func(c *config.Config) {
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("", "output/", "workspace", nil)}
+		}, "requires a bucket"},
+		{"unknown volume", func(c *config.Config) {
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "output/", "missing", nil)}
+		}, "unknown worker volume"},
+		{"duplicate API-only identity", func(c *config.Config) {
+			other := mountedS3Write("bucket", "", "", nil)
+			other.MountedWrite = nil
+			c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "output/", "workspace", nil), other}
+		}, "duplicate mounted S3 backend"},
+		{"read-only mount", func(c *config.Config) {
+			c.Kubernetes.Storage.VolumeMounts[0] = object(map[string]interface{}{"name": "workspace", "mountPath": "/outputs", "readOnly": true})
+		}, "must be writable"},
+		{"zero timeout", func(c *config.Config) { c.GenericS3[0].MountedWrite.Timeout = durationpb.New(0) }, "must be positive"},
+		{"negative timeout", func(c *config.Config) { c.GenericS3[0].MountedWrite.Timeout = durationpb.New(-time.Second) }, "must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := existingConfig()
+			addMount(bad, "workspace", "/outputs", nil)
+			bad.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "output/", "workspace", nil)}
+			tc.change(bad)
+			if _, err := Resolve(&tes.Task{Id: "task-123"}, bad); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
 	}
-}
-
-func TestS3MountedWriteRequiresKubernetesStorage(t *testing.T) {
 	for _, change := range []func(*config.Config){
 		func(c *config.Config) { c.Kubernetes.Storage = nil },
 		func(c *config.Config) { c.Kubernetes = nil },
 	} {
-		c := existingConfig()
-		c.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "results/", "output-view", nil)}
-		change(c)
-		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "require Kubernetes.Storage") {
-			t.Fatalf("configured S3 mounted write without Kubernetes.Storage was not rejected: %v", err)
+		withoutStorage := existingConfig()
+		withoutStorage.GenericS3 = []*config.GenericS3Storage{mountedS3Write("bucket", "output/", "workspace", nil)}
+		change(withoutStorage)
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, withoutStorage); err == nil || !strings.Contains(err.Error(), "require Kubernetes.Storage") {
+			t.Fatalf("mounted write without Kubernetes.Storage accepted: %v", err)
 		}
 	}
 }
 
-func TestNamedContainersReceiveStorageMounts(t *testing.T) {
+func TestNamedContainerSelection(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.WorkerContainer = "funnel-worker"
 	c.Kubernetes.Storage.ExecutorContainer = "task-runner"
-	c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, &config.KubernetesStorageBinding{
-		Name: "cache",
-		Source: &config.KubernetesStorageBinding_ExistingClaim{
-			ExistingClaim: "shared-cache",
-		},
-		WorkerMounts: []*config.KubernetesWorkerMount{namedMount("cache-view", "mountPath: /cache\nreadOnly: true\nsubPath: cache")},
-	})
+	addVolume(c, "cache", "shared-cache")
+	addMount(c, "cache", "/cache", map[string]interface{}{"readOnly": true, "subPath": "cache"})
 	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	worker := testJob()
 	worker.Spec.Template.Spec.Containers = []corev1.Container{{Name: "sidecar"}, {Name: "funnel-worker"}}
 	if err := p.ApplyWorker(worker, "/work", "task-123"); err != nil {
 		t.Fatal(err)
 	}
-	containers := worker.Spec.Template.Spec.Containers
-	if len(containers[0].VolumeMounts) != 0 || len(containers[0].Env) != 0 {
-		t.Fatalf("sidecar received worker storage: %+v", containers[0])
+	if len(worker.Spec.Template.Spec.Containers[0].VolumeMounts) != 0 || len(worker.Spec.Template.Spec.Containers[0].Env) != 0 {
+		t.Fatal("worker sidecar received storage")
 	}
-	if len(containers[1].VolumeMounts) != 2 || len(containers[1].Env) != 1 || containers[1].Env[0].Name != Env {
-		t.Fatalf("worker container missed storage mounts or snapshot: %+v", containers[1])
-	}
-	workerSnapshot, err := Decode(worker.Annotations[Annotation])
+	snapshot, err := Decode(worker.Annotations[Annotation])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workerSnapshot.WorkerContainer != "funnel-worker" || workerSnapshot.ExecutorContainer != "task-runner" {
-		t.Fatalf("container selection was not persisted: %+v", workerSnapshot)
+	if snapshot.WorkerContainer != "funnel-worker" || snapshot.ExecutorContainer != "task-runner" {
+		t.Fatalf("container selection was not persisted: %+v", snapshot)
 	}
-
 	executor := testJob()
 	executor.Spec.Template.Spec.Containers = []corev1.Container{{Name: "sidecar"}, {Name: "task-runner"}}
-	if err := workerSnapshot.ApplyExecutor(executor, "task-123", []corev1.VolumeMount{{MountPath: "/inputs"}}); err != nil {
+	if err := snapshot.ApplyExecutor(executor, "task-123", []corev1.VolumeMount{{MountPath: "/inputs"}}); err != nil {
 		t.Fatal(err)
 	}
-	containers = executor.Spec.Template.Spec.Containers
-	if len(containers[0].VolumeMounts) != 0 {
-		t.Fatalf("executor sidecar received task storage: %+v", containers[0].VolumeMounts)
-	}
-	if len(containers[1].VolumeMounts) != 1 || containers[1].VolumeMounts[0].SubPath != "task-123/inputs" {
-		t.Fatalf("task container missed workspace mount: %+v", containers[1].VolumeMounts)
+	if len(executor.Spec.Template.Spec.Containers[0].VolumeMounts) != 0 || len(executor.Spec.Template.Spec.Containers[1].VolumeMounts) != 1 {
+		t.Fatal("executor mounts were applied to the wrong container")
 	}
 }
 
-func TestMultipleContainersRequireStorageContainerSelection(t *testing.T) {
+func TestMultipleContainersRequireNamedStorageContainers(t *testing.T) {
 	p, err := Resolve(&tes.Task{Id: "task-123"}, existingConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	worker := testJob()
 	worker.Spec.Template.Spec.Containers = []corev1.Container{{Name: "sidecar"}, {Name: "worker"}}
 	if err := p.ApplyWorker(worker, "/work", "task-123"); err == nil || !strings.Contains(err.Error(), "Kubernetes.Storage.WorkerContainer") {
-		t.Fatalf("worker template without a selection should fail actionably, got %v", err)
+		t.Fatalf("multiple worker containers without selection accepted: %v", err)
 	}
-
 	executor := testJob()
 	executor.Spec.Template.Spec.Containers = []corev1.Container{{Name: "sidecar"}, {Name: "runner"}}
 	if err := p.ApplyExecutor(executor, "task-123", []corev1.VolumeMount{{MountPath: "/inputs"}}); err == nil || !strings.Contains(err.Error(), "Kubernetes.Storage.ExecutorContainer") {
-		t.Fatalf("executor template without a selection should fail actionably, got %v", err)
+		t.Fatalf("multiple executor containers without selection accepted: %v", err)
 	}
-
 	c := existingConfig()
 	c.Kubernetes.Storage.WorkerContainer = "missing"
 	p, err = Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.ApplyWorker(testJob(), "/work", "task-123"); err == nil || !strings.Contains(err.Error(), `"missing"`) {
-		t.Fatalf("unknown worker container should be rejected, got %v", err)
+	if err := p.ApplyWorker(testJob(), "/work", "task-123"); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("unknown worker container accepted: %v", err)
 	}
-
 	c = existingConfig()
 	c.Kubernetes.Storage.ExecutorContainer = "missing"
 	p, err = Resolve(&tes.Task{Id: "task-123"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.ApplyExecutor(testJob(), "task-123", []corev1.VolumeMount{{MountPath: "/inputs"}}); err == nil || !strings.Contains(err.Error(), `"missing"`) {
-		t.Fatalf("unknown executor container should be rejected, got %v", err)
+	if err := p.ApplyExecutor(testJob(), "task-123", nil); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("unknown executor container accepted: %v", err)
 	}
 }
 
-func TestNativeTemplatesPreservedAndPairBound(t *testing.T) {
+func TestNativeTemplatesPreservedAndExplicitlyLinked(t *testing.T) {
 	for _, pair := range []bool{false, true} {
-		t.Run(map[bool]string{false: "PVC-only", true: "pair"}[pair], func(t *testing.T) {
+		t.Run(map[bool]string{false: "PVC only", true: "PV pair"}[pair], func(t *testing.T) {
 			c := existingConfig()
-			templates := &config.KubernetesStorageTemplates{PVC: pvcTemplate}
+			setVolume(c, 0, "workspace", "claim-{{.TaskId}}")
+			claimText := pvcTemplate
 			if pair {
-				templates.PV = pvTemplate
+				claimText = pairedPVC
+				c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
 			}
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: templates}
-			c.GenericS3 = nil
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, claimText)}
 			p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 			if err != nil {
 				t.Fatal(err)
 			}
 			claim := p.Claims[0]
-			if claim.Name != "claim-task-123" || claim.Namespace != "jobs" || *claim.Spec.StorageClassName != "fast" || claim.Spec.Resources.Requests.Storage().String() != "5Gi" || claim.Spec.AccessModes[0] != corev1.ReadWriteMany {
-				t.Fatalf("native PVC altered: %+v", claim)
+			if claim.Name != "claim-task-123" || claim.Namespace != "jobs" || claim.Spec.StorageClassName == nil || *claim.Spec.StorageClassName != "fast" || claim.Spec.Resources.Requests.Storage().String() != "5Gi" || claim.Spec.AccessModes[0] != corev1.ReadWriteMany {
+				t.Fatalf("native PVC fields changed: %+v", claim)
 			}
 			if pair {
 				pv := p.PersistentVolumes[0]
 				if pv.Spec.CSI.Driver != "example.csi" || pv.Spec.CSI.VolumeAttributes["bucket"] != "native-bucket" || pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain {
-					t.Fatal("native CSI/PV fields altered")
+					t.Fatal("native PV fields changed")
 				}
 				if claim.Spec.VolumeName != pv.Name || pv.Spec.ClaimRef.Name != claim.Name || pv.Spec.ClaimRef.Namespace != "jobs" {
-					t.Fatal("PV/PVC pair was not bound")
+					t.Fatal("explicit PV/PVC link or claimRef changed")
 				}
 			} else if len(p.PersistentVolumes) != 0 || claim.Spec.VolumeName != "" {
-				t.Fatal("PVC-only acquired PV")
+				t.Fatal("PVC-only configuration acquired a PV")
 			}
 			snapshot, err := p.Encode()
 			if err != nil {
@@ -679,89 +539,194 @@ func TestNativeTemplatesPreservedAndPairBound(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(decoded.Claims) != 0 || len(decoded.PersistentVolumes) != 0 || !reflect.DeepEqual(p.OwnedClaims, decoded.OwnedClaims) || !reflect.DeepEqual(p.OwnedVolumes, decoded.OwnedVolumes) {
-				t.Fatal("snapshot lost ownership or retained creation objects")
+				t.Fatal("snapshot changed ownership or retained create objects")
 			}
 		})
 	}
 }
 
-func TestInvalidBindings(t *testing.T) {
+func TestSharedPVCAndOperatorPVReferences(t *testing.T) {
+	t.Run("volumes may share managed PVC", func(t *testing.T) {
+		c := existingConfig()
+		setVolume(c, 0, "workspace", "claim-task-123")
+		addVolume(c, "alias", "claim-task-123")
+		c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pvcTemplate)}
+		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Claims) != 1 || len(p.OwnedClaims) != 1 || p.Volumes[0].PersistentVolumeClaim.ClaimName != p.Volumes[1].PersistentVolumeClaim.ClaimName {
+			t.Fatalf("shared PVC was duplicated: %+v", p)
+		}
+	})
+	t.Run("PVC may name operator-managed PV", func(t *testing.T) {
+		c := existingConfig()
+		setVolume(c, 0, "workspace", "claim-task-123")
+		claim := strings.Replace(pvcTemplate, "  accessModes:", "  volumeName: operator-disk\n  accessModes:", 1)
+		c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, claim)}
+		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Claims[0].Spec.VolumeName != "operator-disk" || len(p.PersistentVolumes) != 0 {
+			t.Fatalf("operator PV reference changed: %+v", p.Claims[0])
+		}
+	})
+}
+
+func TestStrictNativeDecodingAndScalarRendering(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Volumes = []*structpb.Struct{nativeYAML(t, "name: workspace\npersistentVolumeClaim:\n  claimName: shared-{{.TaskId}}\n")}
+	c.Kubernetes.Storage.VolumeMounts = []*structpb.Struct{nativeYAML(t, "name: workspace\nmountPath: /data/{{.TaskId}}\nreadOnly: true\n")}
+	p, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Volumes[0].PersistentVolumeClaim.ClaimName != "shared-task-123" || p.WorkerMounts[0].MountPath != "/data/task-123" {
+		t.Fatalf("scalar templates did not resolve: %+v %+v", p.Volumes, p.WorkerMounts)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *config.KubernetesStorage)
+	}{
+		{"unknown volume field", func(t *testing.T, s *config.KubernetesStorage) {
+			s.Volumes = []*structpb.Struct{nativeYAML(t, "name: workspace\nunknownField: true\npersistentVolumeClaim:\n  claimName: shared-data\n")}
+		}},
+		{"unknown mount field", func(t *testing.T, s *config.KubernetesStorage) {
+			s.VolumeMounts = []*structpb.Struct{nativeYAML(t, "name: workspace\nmountPath: /data\nunknownField: true\n")}
+		}},
+		{"unknown PVC field", func(t *testing.T, s *config.KubernetesStorage) {
+			s.Volumes[0] = object(map[string]interface{}{"name": "workspace", "persistentVolumeClaim": map[string]interface{}{"claimName": "claim-task-123"}})
+			s.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "  accessModes:", "  unknownField: true\n  accessModes:", 1))}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := existingConfig()
+			tc.mutate(t, bad.Kubernetes.Storage)
+			if _, err := Resolve(&tes.Task{Id: "task-123"}, bad); err == nil {
+				t.Fatal("unknown Kubernetes field accepted")
+			}
+		})
+	}
+}
+
+func TestInvalidNativeStorageAndLinks(t *testing.T) {
 	tests := []struct {
 		name   string
-		change func(*config.Config)
+		change func(*testing.T, *config.Config)
 	}{
-		{"unknown workspace", func(c *config.Config) { c.Kubernetes.Storage.WorkspaceVolume = "missing" }},
-		{"duplicate binding", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings = append(c.Kubernetes.Storage.Bindings, c.Kubernetes.Storage.Bindings[0])
+		{"unknown workspace", func(_ *testing.T, c *config.Config) { c.Kubernetes.Storage.WorkspaceVolume = "missing" }},
+		{"duplicate volume", func(_ *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.Volumes = append(c.Kubernetes.Storage.Volumes, c.Kubernetes.Storage.Volumes[0])
 		}},
-		{"empty source", func(c *config.Config) { c.Kubernetes.Storage.Bindings[0].Source = nil }},
-		{"invalid claim", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "../claim"}
+		{"invalid claim name", func(_ *testing.T, c *config.Config) { setVolume(c, 0, "workspace", "../claim") }},
+		{"non-PVC source", func(_ *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.Volumes[0] = object(map[string]interface{}{"name": "workspace", "hostPath": map[string]interface{}{"path": "/data"}})
 		}},
-		{"relative workdir", func(c *config.Config) { c.Worker.WorkDir = "relative" }},
-		{"mount traversal", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("data-view", "mountPath: /data/../etc")}
+		{"multiple volume sources", func(_ *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.Volumes[0] = object(map[string]interface{}{"name": "workspace", "persistentVolumeClaim": map[string]interface{}{"claimName": "shared-data"}, "hostPath": map[string]interface{}{"path": "/data"}})
 		}},
-		{"foreign mount", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("data-view", "name: foreign\nmountPath: /data")}
+		{"relative workdir", func(_ *testing.T, c *config.Config) { c.Worker.WorkDir = "relative" }},
+		{"mount traversal", func(_ *testing.T, c *config.Config) { addMount(c, "workspace", "/data/../etc", nil) }},
+		{"unknown mount volume", func(_ *testing.T, c *config.Config) { addMount(c, "missing", "/data", nil) }},
+		{"workspace mount overlay", func(_ *testing.T, c *config.Config) { addMount(c, "workspace", "/work", nil) }},
+		{"both subPath forms", func(_ *testing.T, c *config.Config) {
+			addMount(c, "workspace", "/data", map[string]interface{}{"subPath": "a", "subPathExpr": "b"})
 		}},
-		{"single pod workspace", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "ReadWriteMany", "ReadWriteOncePod", 1)}}
+		{"block PVC", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "  accessModes:", "  volumeMode: Block\n  accessModes:", 1))}
 		}},
-		{"mixed single pod workspace", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "ReadWriteMany", "ReadWriteMany, ReadWriteOncePod", 1)}}
+		{"RWOP workspace", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "ReadWriteMany", "ReadWriteOncePod", 1))}
 		}},
-		{"different namespace", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "  name:", "  namespace: foreign\n  name:", 1)}}
+		{"read-only workspace PVC", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "ReadWriteMany", "ReadOnlyMany", 1))}
 		}},
-		{"wrong kind", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "PersistentVolumeClaim", "Secret", 1)}}
+		{"foreign PVC namespace", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			raw := strings.Replace(pvcTemplate, "metadata:\n", "metadata:\n  namespace: foreign\n", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
-		{"readonly workspace PVC", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "ReadWriteMany", "ReadOnlyMany", 1)}}
+		{"wrong PVC kind", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "PersistentVolumeClaim", "Secret", 1))}
 		}},
-		{"owned native PVC", func(c *config.Config) {
-			owned := strings.Replace(pvcTemplate, "  name:", "  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n  name:", 1)
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: owned}}
+		{"PVC owner reference", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			raw := strings.Replace(pvcTemplate, "metadata:\n", "metadata:\n  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
-		{"owned native PV", func(c *config.Config) {
-			owned := strings.Replace(pvTemplate, "  name:", "  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n  name:", 1)
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: owned}}
+		{"PVC name lacks task ID", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "shared")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "claim-{{.TaskId}}", "shared", 1))}
 		}},
-		{"block PVC", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate + "  volumeMode: Block\n"}}
+		{"unused PVC template", func(t *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pvcTemplate)}
 		}},
-		{"block PV", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: pvTemplate + "  volumeMode: Block\n"}}
+		{"duplicate PVC template", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			item := nativeYAML(t, pvcTemplate)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{item, item}
 		}},
-		{"workspace overlay", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{namedMount("workspace-view", "mountPath: /work")}
+		{"conflicting PVC volumeName", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			raw := strings.Replace(pairedPVC, "disk-{{.TaskId}}", "other", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
 		}},
-		{"unknown native field", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate + "  typo: value\n"}}
+		{"orphan PV template", func(t *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
 		}},
-		{"multiple docs", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate + "---\n" + pvcTemplate}}
+		{"PV without source", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: disk-{{.TaskId}}\nspec: {}\n")}
 		}},
-		{"foreign pair", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: pvTemplate + "  claimRef:\n    name: foreign\n"}}
+		{"multiple PV sources", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate+"  hostPath:\n    path: /tmp/host\n")}
 		}},
-		{"missing PV source", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: disk-{{.TaskId}}\nspec: {}\n"}}
+		{"PV owner reference", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			raw := strings.Replace(pvTemplate, "metadata:\n", "metadata:\n  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n", 1)
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
-		{"multiple PV sources", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: pvcTemplate, PV: pvTemplate + "  hostPath:\n    path: /tmp/host\n"}}
+		{"block PV", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvTemplate, "  capacity:", "  volumeMode: Block\n  capacity:", 1))}
 		}},
-		{"shared generated name", func(c *config.Config) {
-			c.Kubernetes.Storage.Bindings[0].Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(pvcTemplate, "claim-{{.TaskId}}", "shared", 1)}}
+		{"foreign claimRef", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			raw := strings.Replace(pvTemplate, "spec:\n", "spec:\n  claimRef:\n    name: foreign\n", 1)
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, raw)}
+		}},
+		{"multiple PVCs point to one PV", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			addVolume(c, "cache", "other-task-123")
+			other := strings.Replace(pairedPVC, "claim-{{.TaskId}}", "other-{{.TaskId}}", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC), nativeYAML(t, other)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
+		}},
+		{"wrong PV kind", func(t *testing.T, c *config.Config) {
+			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
+			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvTemplate, "PersistentVolume", "Secret", 1))}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := existingConfig()
-			tt.change(c)
+			tt.change(t, c)
 			if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil {
-				t.Fatal("invalid configuration accepted")
+				t.Fatal("invalid native storage configuration accepted")
 			}
 		})
 	}
@@ -792,19 +757,10 @@ func TestMountFailuresDoNotModifyJob(t *testing.T) {
 		t.Fatal("failed application modified job")
 	}
 	if err := p.ApplyWorker(testJob(), "/different", "task-123"); err == nil {
-		t.Fatal("different worker work directory accepted")
+		t.Fatal("different work directory accepted")
 	}
 	if err := p.ApplyExecutor(testJob(), "other-task", nil); err == nil {
 		t.Fatal("different task accepted")
-	}
-	job = testJob()
-	job.Spec.Template.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{Name: "config", MountPath: "/etc/config"}}
-	before = job.DeepCopy()
-	if err := p.ApplyExecutor(job, "task-123", []corev1.VolumeMount{{MountPath: "/etc"}}); err == nil {
-		t.Fatal("parent mount overlay accepted")
-	}
-	if !reflect.DeepEqual(job, before) {
-		t.Fatal("overlay error modified job")
 	}
 }
 
@@ -817,32 +773,35 @@ func TestInvalidSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{"null", "{}", snapshot + "{}", strings.Replace(snapshot, `"Version":4`, `"Version":3`, 1), strings.Replace(snapshot, `"Version":4`, `"Version":5`, 1), strings.Replace(snapshot, `"WorkspaceVolume":"workspace"`, `"WorkspaceVolume":"missing"`, 1), strings.Replace(snapshot, `"OwnedClaims":null`, `"OwnedClaims":["unmounted"]`, 1)} {
-		if _, err := Decode(invalid); err == nil {
-			t.Fatalf("invalid snapshot accepted: %s", invalid)
+	invalid := []string{
+		"null", "{}", snapshot + "{}",
+		strings.Replace(snapshot, "\"Version\":4", "\"Version\":3", 1),
+		strings.Replace(snapshot, "\"Version\":4", "\"Version\":5", 1),
+		strings.Replace(snapshot, "\"WorkspaceVolume\":\"workspace\"", "\"WorkspaceVolume\":\"missing\"", 1),
+		strings.Replace(snapshot, "\"OwnedClaims\":null", "\"OwnedClaims\":[\"unmounted\"]", 1),
+	}
+	for _, value := range invalid {
+		if _, err := Decode(value); err == nil {
+			t.Fatalf("invalid snapshot accepted: %s", value)
 		}
 	}
-	if _, err := Decode(strings.Replace(snapshot, `"Version":4`, `"Version":3`, 1)); err == nil || !strings.Contains(err.Error(), "version 4 is required") {
-		t.Fatalf("version 3 storage plan snapshot was not rejected clearly: %v", err)
-	}
-	oldSnapshot := `{"Version":3,"TaskID":"task-123","Namespace":"jobs","WorkDir":"/work","WorkspaceVolume":"workspace","WorkerContainer":"","ExecutorContainer":"","Volumes":[],"WorkerMounts":[],"OwnedClaims":null,"OwnedVolumes":null}`
-	if _, err := Decode(oldSnapshot); err == nil || !strings.Contains(err.Error(), "version 3; version 4 is required") {
-		t.Fatalf("actual version 3 fields hid the actionable version error: %v", err)
+	if _, err := Decode(strings.Replace(snapshot, "\"Version\":4", "\"Version\":3", 1)); err == nil || !strings.Contains(err.Error(), "version 4 is required") {
+		t.Fatalf("version 3 snapshot was not rejected clearly: %v", err)
 	}
 }
 
-func TestLegacyResolve(t *testing.T) {
+func TestLegacyResolveAndDottedTaskID(t *testing.T) {
 	if p, err := Resolve(&tes.Task{Id: "task-123"}, config.DefaultConfig()); err != nil || p != nil {
 		t.Fatalf("legacy config produced a plan: %+v %v", p, err)
 	}
-}
-
-func TestDottedTaskID(t *testing.T) {
 	if _, err := Resolve(&tes.Task{Id: "task.123"}, existingConfig()); err != nil {
-		t.Fatalf("valid Kubernetes task ID rejected: %v", err)
+		t.Fatalf("valid dotted task ID rejected: %v", err)
 	}
 }
 
 func testJob() *batchv1.Job {
-	return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "task-123", Namespace: "jobs"}, Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}}}}}
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "task-123", Namespace: "jobs"},
+		Spec:       batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}}}},
+	}
 }

@@ -7,7 +7,7 @@ menu:
 
 # Mounted inputs
 
-`GenericS3.MountedRead` and `GenericS3.MountedWrite` let a Kubernetes worker read inputs or publish outputs through named filesystem mounts. Configure each mount under `Kubernetes.Storage.Bindings`. The GenericS3 backend refers to each mount by name. Reads and writes are optional and can use separate mounts.
+`GenericS3.MountedRead` and `GenericS3.MountedWrite` let a Kubernetes worker read inputs or publish outputs through PVC-backed filesystem mounts. Each setting names a configured storage volume. If that volume has multiple worker mounts, use `SubPath` to select the mount whose static Kubernetes `subPath` matches exactly. Read and write routes are optional and can use separate volumes or mount views.
 
 ```yaml
 GenericS3:
@@ -18,43 +18,52 @@ GenericS3:
     Secret: storage-secret
     Region: us-east-1
     MountedRead:
-      WorkerMount: reference-root
+      Volume: reference-data
+      SubPath: genomes
       Prefix: genomes/
     MountedWrite:
-      WorkerMount: results-root
+      Volume: result-data
       Prefix: results/
-      Timeout: 45m
+      Timeout: 2700s
 
 Kubernetes:
+  JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    Bindings:
-      - Name: workspace
-        ExistingClaim: task-workspace
-      - Name: references
-        ExistingClaim: reference-data
-        WorkerMounts:
-          - Name: reference-root
-            Mount: |
-              mountPath: /mnt/reference
-              readOnly: true
-      - Name: results
-        ExistingClaim: task-results
-        WorkerMounts:
-          - Name: results-root
-            Mount: |
-              mountPath: /mnt/results
+    volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: task-workspace
+      - name: reference-data
+        persistentVolumeClaim:
+          claimName: reference-pvc
+      - name: result-data
+        persistentVolumeClaim:
+          claimName: task-results
+    volumeMounts:
+      - name: reference-data
+        mountPath: /mnt/reference
+        readOnly: true
+        subPath: genomes
+      - name: reference-data
+        mountPath: /mnt/annotations
+        readOnly: true
+        subPath: annotations
+      - name: result-data
+        mountPath: /mnt/results
 ```
 
-`Prefix` is relative to the bucket. An empty prefix selects the whole bucket. The mount root represents the selected prefix, so `s3://analysis-data/genomes/genome.fa` maps to `/mnt/reference/genome.fa`. Funnel does not append the prefix to `mountPath`.
+The two reference mounts use one PVC at different paths. `MountedRead.SubPath: genomes` selects the first view. `MountedWrite` omits `SubPath` because `result-data` has one worker mount. If a volume has several mounts, set `SubPath` to the exact static `volumeMounts[].subPath` value. Set `SubPath: ""` to select a static root mount. A mount with `subPathExpr` can be selected only when it is the unique mount for that volume and `SubPath` is absent.
 
-The `WorkerMount` value must name a native `WorkerMounts` entry. An unknown name fails task planning. Its `Mount` contains one Kubernetes `volumeMount` YAML object with one authored `mountPath`. Kubernetes applies `subPath` or `subPathExpr` to the mounted view. Funnel uses the resulting view at `mountPath` as the read root and does not append the subpath again. The storage driver and operator must make the mounted view correspond to the configured bucket prefix and provide the required freshness.
+`Prefix` is relative to the bucket. An empty prefix selects the whole bucket. The selected mount's authored `mountPath` is the route root. For example, `s3://analysis-data/genomes/genome.fa` maps to `/mnt/reference/genome.fa`. Funnel does not append the selected subpath or prefix to `mountPath`. The storage driver and operator must make the mounted view correspond to the configured bucket prefix and provide the required freshness.
 
-`MountedWrite` uses the same naming and prefix rules. Its worker mount must be writable, including the underlying PVC volume. The mounted view represents the configured bucket prefix. Funnel appends the output key path relative to that prefix when it copies a TES output file into the mount.
+`MountedWrite` uses the same volume, subpath, and prefix rules. Its selected mount must be writable, and the underlying PVC must permit writes. Funnel appends an output key path relative to the configured prefix when it copies a TES output file into the mount.
+
+For native storage configuration details, including existing claims, StorageClass-provisioned claims, and explicit PV/PVC pairs, see [Kubernetes storage](../../compute/kubernetes-storage/).
 
 ## TES behavior
 
-Clients continue to submit ordinary TES inputs. They do not supply PVC names, worker mount names, or deployment paths.
+Clients continue to submit ordinary TES inputs. They do not supply PVC names, volume names, worker mount paths, or deployment paths.
 
 ```json
 {
@@ -74,27 +83,27 @@ Clients continue to submit ordinary TES inputs. They do not supply PVC names, wo
 }
 ```
 
-The worker copies each input into the task workspace. For a matching GenericS3 mounted read, it reads the source from the filesystem mount. The executor sees the copy at `/inputs/genome.fa`. Changing that copy does not change the mounted source. Directory inputs preserve their relative filenames. Reference mounts remain worker-only. They do not change TES `volumes`, which retain their empty scratch-directory behavior.
+The worker copies each input into the task workspace. For a matching GenericS3 mounted read, it reads the source from the selected filesystem mount. The executor sees the copy at `/inputs/genome.fa`. Changing that copy does not change the mounted source. Directory inputs preserve their relative filenames. Reference mounts remain worker-only. They do not change TES `volumes`, which retain their empty scratch-directory behavior.
 
 ## Read routing and safety
 
-The worker activates a mounted read or write only when the submitted storage plan names the exact GenericS3 `Endpoint` and `Bucket`. The plan stores `S3ReadMounts` and `S3WriteMounts` with endpoint, bucket, prefix, and root, without credentials. The worker ignores static `MountedRead` and `MountedWrite` settings, including when the submitted plan has no mounted routes. Configured mounted reads and writes require `Kubernetes.Storage` and its submitted plan. The API server's `NewMux` does not activate filesystem reads or writes.
+The worker activates a mounted read or write only when the submitted storage plan names the exact GenericS3 `Endpoint` and `Bucket`. The plan stores `S3ReadMounts` and `S3WriteMounts` with the endpoint, bucket, prefix, and mount root, without credentials. The worker ignores static `MountedRead` and `MountedWrite` settings, including when the submitted plan has no mounted routes. Configured mounted reads and writes require `Kubernetes.Storage` and its submitted plan. The API server's `NewMux` does not activate filesystem reads or writes.
 
 GenericS3 handles inputs whose bucket-relative key matches its configured prefix. Funnel treats S3 keys literally. Spaces, `#`, and percent signs remain part of the key. For example, `a%20b.txt` names the literal file `a%20b.txt`. Prefix matching uses whole path components, so `genomes/` does not match `genomes-old/file.fa`. Unmatched URLs use the configured storage API path.
 
-A matched file must exist beneath the resolved mount root. Funnel rejects traversal, encoded traversal forms, and escaping symlinks through rooted filesystem operations. Regular-file symlinks within the root can be read. Directory listings reject directory symlinks and special files. A missing or unsafe matched input fails the transfer. Funnel does not fall back to the API for that input.
+A matched file must exist beneath the selected mount root. Funnel rejects traversal, encoded traversal forms, and escaping symlinks through rooted filesystem operations. Regular-file symlinks within the root can be read. Directory listings reject directory symlinks and special files. A missing or unsafe matched input fails the transfer. Funnel does not fall back to the API for that input.
 
 ## Configuration ownership
 
-The server resolves each backend's worker mounts and records mounted reads and writes in version 4 storage plans. Workers use the plan directly, even when their static ConfigMap differs. The server does not read worker filesystem paths. The version 4 decoder cannot run or clean up Jobs with version 1, 2, or 3 storage plans. Finish those tasks and clean up their Jobs with a compatible older binary before upgrading.
+The server resolves each backend's selected worker volume mount and records mounted reads and writes in version 4 storage plans. Workers use the plan directly, even when their static ConfigMap differs. The server does not read worker filesystem paths. Existing Jobs with version 4 plans remain compatible. The version 4 decoder cannot run or clean up Jobs with version 1, 2, or 3 plans. Finish those tasks and clean up their Jobs with a compatible older binary before upgrading.
 
-Other compute backends retain their existing storage clients. No TES schema fields change.
+The config schema changed. Replace `MountedRead.WorkerMount` and `MountedWrite.WorkerMount` with `Volume`, and set `SubPath` when one volume has multiple explicit worker mounts. Rebuild Go RPC plugins against the updated config package before exchanging configuration with them. The schema reserves field 1 and the name `WorkerMount` in `MountedRead` and `MountedWrite`. Other compute backends retain their existing storage clients. No TES schema fields change.
 
 ## Output publication
 
-For an output URL that matches a configured `MountedWrite` endpoint, bucket, and prefix, the worker copies each output file into the named mount. It then calls S3 `HeadObject` until the object exists with the same size as the local file. The worker checks zero-byte files too.
+For an output URL that matches a configured `MountedWrite` endpoint, bucket, and prefix, the worker copies each output file into the selected mount. It then calls S3 `HeadObject` until the object exists with the same size as the local file. The worker checks zero-byte files too.
 
-This check proves that S3 reports an object with the expected size. It does not compare file contents, checksums, or object versions. A same-sized object left by an earlier task can satisfy the check. Set `MountedWrite.Timeout` to bound polling. The default is three hours, and the worker polls every two seconds. An explicit timeout must be positive. Task cancellation also stops the wait.
+This check proves that S3 reports an object with the expected size. It does not compare file contents, checksums, or object versions. A same-sized object left by an earlier task can satisfy the check. Set `MountedWrite.Timeout` to bound polling. The example's `2700s` timeout is 45 minutes. The default is three hours, and the worker polls every two seconds. An explicit timeout must be positive. Task cancellation also stops the wait.
 
 The GenericS3 credentials must allow `HeadObject` for mounted destinations. They do not need upload permission for an output handled by the mount. An output URL that does not match the configured endpoint, bucket, and prefix follows the regular GenericS3 API upload path, which requires upload permission. Outputs do not use a `MountedRead` setting.
 

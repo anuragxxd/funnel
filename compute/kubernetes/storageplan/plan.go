@@ -1,12 +1,10 @@
-// Package storageplan resolves native Kubernetes storage bindings for one task.
+// Package storageplan resolves native Kubernetes storage objects for one task.
 package storageplan
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path"
 	"reflect"
 	"strings"
@@ -16,10 +14,9 @@ import (
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	"google.golang.org/protobuf/types/known/structpb"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
-	yamlreader "k8s.io/apimachinery/pkg/util/yaml"
-	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -72,15 +69,25 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		return nil, fmt.Errorf("invalid storage namespace %q: %s", ns, strings.Join(errs, ", "))
 	}
 	storageConfig := conf.Kubernetes.Storage
-	workerMounts, mountsByName, err := resolveWorkerMounts(storageConfig)
+	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
+	if len(conf.GenericS3) > 0 && conf.GenericS3[0] != nil {
+		data["Bucket"], data["Region"], data["KmsKeyID"] = conf.GenericS3[0].Bucket, conf.GenericS3[0].Region, conf.GenericS3[0].KmsKeyID
+	}
+	volumes, err := parseVolumes(storageConfig.Volumes, data)
 	if err != nil {
 		return nil, err
 	}
-	s3ReadMounts, err := resolveS3ReadMounts(conf.GenericS3, mountsByName)
+	workerMounts, mountsByVolume, err := resolveWorkerMounts(storageConfig.VolumeMounts, data)
 	if err != nil {
 		return nil, err
 	}
-	s3WriteMounts, err := resolveS3WriteMounts(conf.GenericS3, mountsByName)
+	// Validate mounted S3 identities before planning any resources so invalid
+	// routes cannot reach the resource creation path.
+	s3ReadMounts, err := resolveS3ReadMounts(conf.GenericS3, mountsByVolume)
+	if err != nil {
+		return nil, err
+	}
+	s3WriteMounts, err := resolveS3WriteMounts(conf.GenericS3, mountsByVolume)
 	if err != nil {
 		return nil, err
 	}
@@ -94,112 +101,277 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		ExecutorContainer: storageConfig.ExecutorContainer,
 		S3ReadMounts:      s3ReadMounts,
 		S3WriteMounts:     s3WriteMounts,
+		Volumes:           volumes,
 		WorkerMounts:      workerMounts,
 	}
-	data := map[string]interface{}{"TaskId": task.Id, "Namespace": ns, "DiskGb": task.GetResources().GetDiskGb(), "Bucket": "", "Region": "", "KmsKeyID": ""}
-	if len(conf.GenericS3) > 0 && conf.GenericS3[0] != nil {
-		data["Bucket"], data["Region"], data["KmsKeyID"] = conf.GenericS3[0].Bucket, conf.GenericS3[0].Region, conf.GenericS3[0].KmsKeyID
+	claims, claimsByName, err := parseClaimTemplates(storageConfig.VolumeClaimTemplates, data, ns, volumes, p.WorkspaceVolume, task.Id)
+	if err != nil {
+		return nil, err
 	}
-	for _, binding := range storageConfig.Bindings {
-		claimName := binding.GetExistingClaim()
-		if templates := binding.GetTemplates(); templates != nil {
-			if templates.PVC == "" {
-				return nil, fmt.Errorf("binding %q requires a PVC template", binding.Name)
-			}
-			claim := &corev1.PersistentVolumeClaim{}
-			if err := render(templates.PVC, data, claim); err != nil {
-				return nil, fmt.Errorf("binding %q PVC: %w", binding.Name, err)
-			}
-			if claim.APIVersion != "v1" || claim.Kind != "PersistentVolumeClaim" {
-				return nil, fmt.Errorf("binding %q template must be a v1 PersistentVolumeClaim", binding.Name)
-			}
-			if claim.Namespace == "" {
-				claim.Namespace = ns
-			}
-			if claim.Namespace != ns {
-				return nil, fmt.Errorf("binding %q PVC namespace must be %q", binding.Name, ns)
-			}
-			if len(claim.OwnerReferences) != 0 {
-				return nil, fmt.Errorf("binding %q PVC must not contain owner references", binding.Name)
-			}
-			if claim.Spec.VolumeMode != nil && *claim.Spec.VolumeMode == corev1.PersistentVolumeBlock {
-				return nil, fmt.Errorf("binding %q PVC must use filesystem volume mode", binding.Name)
-			}
-			if claim.GenerateName != "" {
-				return nil, fmt.Errorf("binding %q requires an explicit PVC name", binding.Name)
-			}
-			if binding.Name == p.WorkspaceVolume && len(claim.Spec.AccessModes) > 0 {
-				writable := false
-				for _, mode := range claim.Spec.AccessModes {
-					if mode == corev1.ReadWriteOncePod {
-						return nil, fmt.Errorf("workspace PVC cannot use ReadWriteOncePod: worker and executor run in separate Pods")
-					}
-					if mode == corev1.ReadWriteOnce || mode == corev1.ReadWriteMany {
-						writable = true
-					}
-				}
-				if !writable {
-					return nil, fmt.Errorf("workspace PVC must support writable access from worker and executor Pods")
-				}
-			}
-			claimName = claim.Name
-			if !strings.Contains(claimName, task.Id) {
-				return nil, fmt.Errorf("binding %q PVC name must contain task ID %q", binding.Name, task.Id)
-			}
-			if templates.PV != "" {
-				pv := &corev1.PersistentVolume{}
-				if err := render(templates.PV, data, pv); err != nil {
-					return nil, fmt.Errorf("binding %q PV: %w", binding.Name, err)
-				}
-				if pv.APIVersion != "v1" || pv.Kind != "PersistentVolume" {
-					return nil, fmt.Errorf("binding %q template must be a v1 PersistentVolume", binding.Name)
-				}
-				if pv.Namespace != "" || pv.GenerateName != "" || !validName(pv.Name) || !strings.Contains(pv.Name, task.Id) {
-					return nil, fmt.Errorf("binding %q requires a cluster-scoped PV with an explicit task-specific name", binding.Name)
-				}
-				if len(pv.OwnerReferences) != 0 {
-					return nil, fmt.Errorf("binding %q PV must not contain owner references", binding.Name)
-				}
-				if pv.Spec.VolumeMode != nil && *pv.Spec.VolumeMode == corev1.PersistentVolumeBlock {
-					return nil, fmt.Errorf("binding %q PV must use filesystem volume mode", binding.Name)
-				}
-				sources := reflect.ValueOf(pv.Spec.PersistentVolumeSource)
-				count := 0
-				for i := 0; i < sources.NumField(); i++ {
-					if !sources.Field(i).IsNil() {
-						count++
-					}
-				}
-				if count != 1 {
-					return nil, fmt.Errorf("binding %q PV must have exactly one native volume source", binding.Name)
-				}
-				if claim.Spec.VolumeName != "" && claim.Spec.VolumeName != pv.Name {
-					return nil, fmt.Errorf("binding %q PVC volumeName conflicts with its PV", binding.Name)
-				}
-				claim.Spec.VolumeName = pv.Name
-				if pv.Spec.ClaimRef == nil {
-					pv.Spec.ClaimRef = &corev1.ObjectReference{}
-				}
-				ref := pv.Spec.ClaimRef
-				if (ref.Name != "" && ref.Name != claim.Name) || (ref.Namespace != "" && ref.Namespace != ns) || ref.UID != "" || (ref.Kind != "" && ref.Kind != "PersistentVolumeClaim") || (ref.APIVersion != "" && ref.APIVersion != "v1") {
-					return nil, fmt.Errorf("binding %q PV claimRef conflicts with its PVC", binding.Name)
-				}
-				ref.Name, ref.Namespace = claim.Name, ns
-				p.PersistentVolumes = append(p.PersistentVolumes, pv)
-				p.OwnedVolumes = append(p.OwnedVolumes, pv.Name)
-			}
-			p.Claims = append(p.Claims, claim)
-			p.OwnedClaims = append(p.OwnedClaims, claim.Name)
-		}
-		if !validName(claimName) {
-			return nil, fmt.Errorf("binding %q requires a valid claim name", binding.Name)
-		}
-		p.Volumes = append(p.Volumes, corev1.Volume{Name: binding.Name, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: claimName}}})
+	p.Claims = claims
+	for _, claim := range claims {
+		p.OwnedClaims = append(p.OwnedClaims, claim.Name)
+	}
+	pvs, pvsByName, err := parsePersistentVolumeTemplates(storageConfig.PersistentVolumeTemplates, data, task.Id)
+	if err != nil {
+		return nil, err
+	}
+	p.PersistentVolumes = pvs
+	for _, volume := range pvs {
+		p.OwnedVolumes = append(p.OwnedVolumes, volume.Name)
+	}
+	if err := linkResources(p, claimsByName, pvsByName); err != nil {
+		return nil, err
 	}
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func parseVolumes(rawVolumes []*structpb.Struct, data map[string]interface{}) ([]corev1.Volume, error) {
+	volumes := make([]corev1.Volume, 0, len(rawVolumes))
+	seen := make(map[string]bool, len(rawVolumes))
+	for i, raw := range rawVolumes {
+		volume := corev1.Volume{}
+		if err := decodeStruct(raw, data, &volume); err != nil {
+			return nil, fmt.Errorf("Kubernetes.Storage.Volumes[%d]: %w", i, err)
+		}
+		if len(validation.IsDNS1123Label(volume.Name)) != 0 {
+			return nil, fmt.Errorf("Kubernetes.Storage.Volumes[%d] has invalid name %q", i, volume.Name)
+		}
+		if seen[volume.Name] {
+			return nil, fmt.Errorf("duplicate storage volume %q", volume.Name)
+		}
+		seen[volume.Name] = true
+		if volume.PersistentVolumeClaim == nil || !validName(volume.PersistentVolumeClaim.ClaimName) {
+			return nil, fmt.Errorf("storage volume %q must reference a valid PVC", volume.Name)
+		}
+		expected := corev1.VolumeSource{PersistentVolumeClaim: volume.PersistentVolumeClaim}
+		if !reflect.DeepEqual(volume.VolumeSource, expected) {
+			return nil, fmt.Errorf("storage volume %q must have exactly one PVC source", volume.Name)
+		}
+		volumes = append(volumes, volume)
+	}
+	return volumes, nil
+}
+
+func resolveWorkerMounts(rawMounts []*structpb.Struct, data map[string]interface{}) ([]corev1.VolumeMount, map[string][]corev1.VolumeMount, error) {
+	workerMounts := make([]corev1.VolumeMount, 0, len(rawMounts))
+	mountsByVolume := make(map[string][]corev1.VolumeMount)
+	for i, raw := range rawMounts {
+		mount := corev1.VolumeMount{}
+		if err := decodeStruct(raw, data, &mount); err != nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeMounts[%d]: %w", i, err)
+		}
+		if len(validation.IsDNS1123Label(mount.Name)) != 0 {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeMounts[%d] has invalid volume name %q", i, mount.Name)
+		}
+		if err := validateMount(mount); err != nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeMounts[%d]: %w", i, err)
+		}
+		mountsByVolume[mount.Name] = append(mountsByVolume[mount.Name], mount)
+		workerMounts = append(workerMounts, mount)
+	}
+	return workerMounts, mountsByVolume, nil
+}
+
+func parseClaimTemplates(rawClaims []*structpb.Struct, data map[string]interface{}, namespace string, volumes []corev1.Volume, workspaceVolume, taskID string) ([]*corev1.PersistentVolumeClaim, map[string]*corev1.PersistentVolumeClaim, error) {
+	claims := make([]*corev1.PersistentVolumeClaim, 0, len(rawClaims))
+	byName := make(map[string]*corev1.PersistentVolumeClaim, len(rawClaims))
+	workspaceClaim := ""
+	for _, volume := range volumes {
+		if volume.Name == workspaceVolume {
+			workspaceClaim = volume.PersistentVolumeClaim.ClaimName
+			break
+		}
+	}
+	for i, raw := range rawClaims {
+		claim := &corev1.PersistentVolumeClaim{}
+		if err := decodeStruct(raw, data, claim); err != nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeClaimTemplates[%d]: %w", i, err)
+		}
+		if claim.APIVersion != "v1" || claim.Kind != "PersistentVolumeClaim" {
+			return nil, nil, fmt.Errorf("PVC template %d must be a v1 PersistentVolumeClaim", i)
+		}
+		if claim.Namespace == "" {
+			claim.Namespace = namespace
+		}
+		if claim.Namespace != namespace {
+			return nil, nil, fmt.Errorf("PVC %q namespace must be %q", claim.Name, namespace)
+		}
+		if len(claim.OwnerReferences) != 0 {
+			return nil, nil, fmt.Errorf("PVC %q must not contain owner references", claim.Name)
+		}
+		if claim.Spec.VolumeMode != nil && *claim.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+			return nil, nil, fmt.Errorf("PVC %q must use filesystem volume mode", claim.Name)
+		}
+		if claim.GenerateName != "" || !validName(claim.Name) || !strings.Contains(claim.Name, taskID) {
+			return nil, nil, fmt.Errorf("PVC template %d requires an explicit task-specific name", i)
+		}
+		if claim.Spec.VolumeName != "" && !validName(claim.Spec.VolumeName) {
+			return nil, nil, fmt.Errorf("PVC %q has invalid volumeName %q", claim.Name, claim.Spec.VolumeName)
+		}
+		if claim.Name == workspaceClaim && len(claim.Spec.AccessModes) > 0 {
+			writable := false
+			for _, mode := range claim.Spec.AccessModes {
+				if mode == corev1.ReadWriteOncePod {
+					return nil, nil, fmt.Errorf("workspace PVC cannot use ReadWriteOncePod: worker and executor run in separate Pods")
+				}
+				if mode == corev1.ReadWriteOnce || mode == corev1.ReadWriteMany {
+					writable = true
+				}
+			}
+			if !writable {
+				return nil, nil, fmt.Errorf("workspace PVC must support writable access from worker and executor Pods")
+			}
+		}
+		if _, exists := byName[claim.Name]; exists {
+			return nil, nil, fmt.Errorf("duplicate PVC template name %q", claim.Name)
+		}
+		byName[claim.Name] = claim
+		claims = append(claims, claim)
+	}
+	return claims, byName, nil
+}
+
+func parsePersistentVolumeTemplates(rawVolumes []*structpb.Struct, data map[string]interface{}, taskID string) ([]*corev1.PersistentVolume, map[string]*corev1.PersistentVolume, error) {
+	volumes := make([]*corev1.PersistentVolume, 0, len(rawVolumes))
+	byName := make(map[string]*corev1.PersistentVolume, len(rawVolumes))
+	for i, raw := range rawVolumes {
+		volume := &corev1.PersistentVolume{}
+		if err := decodeStruct(raw, data, volume); err != nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.PersistentVolumeTemplates[%d]: %w", i, err)
+		}
+		if volume.APIVersion != "v1" || volume.Kind != "PersistentVolume" {
+			return nil, nil, fmt.Errorf("PV template %d must be a v1 PersistentVolume", i)
+		}
+		if volume.Namespace != "" || volume.GenerateName != "" || !validName(volume.Name) || !strings.Contains(volume.Name, taskID) {
+			return nil, nil, fmt.Errorf("PV template %d requires a cluster-scoped explicit task-specific name", i)
+		}
+		if len(volume.OwnerReferences) != 0 {
+			return nil, nil, fmt.Errorf("PV %q must not contain owner references", volume.Name)
+		}
+		if volume.Spec.VolumeMode != nil && *volume.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+			return nil, nil, fmt.Errorf("PV %q must use filesystem volume mode", volume.Name)
+		}
+		if persistentVolumeSourceCount(volume.Spec.PersistentVolumeSource) != 1 {
+			return nil, nil, fmt.Errorf("PV %q must have exactly one native volume source", volume.Name)
+		}
+		if _, exists := byName[volume.Name]; exists {
+			return nil, nil, fmt.Errorf("duplicate PV template name %q", volume.Name)
+		}
+		byName[volume.Name] = volume
+		volumes = append(volumes, volume)
+	}
+	return volumes, byName, nil
+}
+
+func persistentVolumeSourceCount(source corev1.PersistentVolumeSource) int {
+	value := reflect.ValueOf(source)
+	count := 0
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Field(i)
+		if field.Kind() == reflect.Pointer && !field.IsNil() {
+			count++
+		}
+	}
+	return count
+}
+
+func linkResources(plan *Plan, claims map[string]*corev1.PersistentVolumeClaim, volumes map[string]*corev1.PersistentVolume) error {
+	claimUse := make(map[string]int, len(claims))
+	for _, volume := range plan.Volumes {
+		name := volume.PersistentVolumeClaim.ClaimName
+		if _, managed := claims[name]; managed {
+			claimUse[name]++
+		}
+	}
+	for name := range claims {
+		if claimUse[name] == 0 {
+			return fmt.Errorf("PVC template %q is not referenced by a storage volume", name)
+		}
+	}
+	linkedPVClaims := make(map[string]string, len(volumes))
+	for _, claim := range plan.Claims {
+		pv, managedPV := volumes[claim.Spec.VolumeName]
+		if !managedPV {
+			continue // A PVC may bind to an operator-managed PV by name.
+		}
+		if previous := linkedPVClaims[pv.Name]; previous != "" {
+			return fmt.Errorf("PV template %q is referenced by multiple PVC templates %q and %q", pv.Name, previous, claim.Name)
+		}
+		linkedPVClaims[pv.Name] = claim.Name
+		if pv.Spec.ClaimRef == nil {
+			pv.Spec.ClaimRef = &corev1.ObjectReference{}
+		}
+		ref := pv.Spec.ClaimRef
+		if (ref.Name != "" && ref.Name != claim.Name) || (ref.Namespace != "" && ref.Namespace != claim.Namespace) || ref.UID != "" || (ref.Kind != "" && ref.Kind != "PersistentVolumeClaim") || (ref.APIVersion != "" && ref.APIVersion != "v1") {
+			return fmt.Errorf("PV %q claimRef conflicts with PVC %q", pv.Name, claim.Name)
+		}
+		ref.Name, ref.Namespace = claim.Name, claim.Namespace
+	}
+	for name := range volumes {
+		if linkedPVClaims[name] == "" {
+			return fmt.Errorf("PV template %q is not referenced by exactly one PVC template", name)
+		}
+	}
+	return nil
+}
+
+func decodeStruct(raw *structpb.Struct, data map[string]interface{}, target interface{}) error {
+	if raw == nil {
+		return fmt.Errorf("native object must not be null")
+	}
+	value, err := renderStringValues(raw.AsMap(), data)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func renderStringValues(value interface{}, data map[string]interface{}) (interface{}, error) {
+	switch value := value.(type) {
+	case string:
+		t, err := template.New("storage-string").Option("missingkey=error").Parse(value)
+		if err != nil {
+			return nil, err
+		}
+		var rendered bytes.Buffer
+		if err := t.Execute(&rendered, data); err != nil {
+			return nil, err
+		}
+		return rendered.String(), nil
+	case []interface{}:
+		for i, item := range value {
+			rendered, err := renderStringValues(item, data)
+			if err != nil {
+				return nil, err
+			}
+			value[i] = rendered
+		}
+		return value, nil
+	case map[string]interface{}:
+		for key, item := range value {
+			rendered, err := renderStringValues(item, data)
+			if err != nil {
+				return nil, err
+			}
+			value[key] = rendered
+		}
+		return value, nil
+	default:
+		return value, nil
+	}
 }
 
 func hasS3MountedReads(backends []*config.GenericS3Storage) bool {
@@ -220,51 +392,7 @@ func hasS3MountedWrites(backends []*config.GenericS3Storage) bool {
 	return false
 }
 
-func resolveWorkerMounts(storageConfig *config.KubernetesStorage) ([]corev1.VolumeMount, map[string]corev1.VolumeMount, error) {
-	workerMounts := make([]corev1.VolumeMount, 0)
-	mountsByName := make(map[string]corev1.VolumeMount)
-	bindingNames := make(map[string]bool)
-	for _, binding := range storageConfig.Bindings {
-		if binding == nil {
-			return nil, nil, fmt.Errorf("nil storage binding")
-		}
-		if len(validation.IsDNS1123Label(binding.Name)) != 0 {
-			return nil, nil, fmt.Errorf("invalid storage binding name %q", binding.Name)
-		}
-		if bindingNames[binding.Name] {
-			return nil, nil, fmt.Errorf("duplicate storage binding %q", binding.Name)
-		}
-		bindingNames[binding.Name] = true
-		for _, namedMount := range binding.WorkerMounts {
-			if namedMount == nil {
-				return nil, nil, fmt.Errorf("binding %q has a nil worker mount", binding.Name)
-			}
-			if len(validation.IsDNS1123Label(namedMount.Name)) != 0 {
-				return nil, nil, fmt.Errorf("binding %q has invalid worker mount name %q", binding.Name, namedMount.Name)
-			}
-			if _, exists := mountsByName[namedMount.Name]; exists {
-				return nil, nil, fmt.Errorf("duplicate worker mount name %q", namedMount.Name)
-			}
-			var mount corev1.VolumeMount
-			if err := decodeNative([]byte(namedMount.Mount), &mount); err != nil {
-				return nil, nil, fmt.Errorf("binding %q worker mount %q: %w", binding.Name, namedMount.Name, err)
-			}
-			if mount.Name != "" && mount.Name != binding.Name {
-				return nil, nil, fmt.Errorf("binding %q worker mount names a different volume", binding.Name)
-			}
-			mount.Name = binding.Name
-			if err := validateMount(mount); err != nil {
-				return nil, nil, fmt.Errorf("binding %q worker mount %q: %w", binding.Name, namedMount.Name, err)
-			}
-			mountsByName[namedMount.Name] = mount
-			workerMounts = append(workerMounts, mount)
-		}
-	}
-
-	return workerMounts, mountsByName, nil
-}
-
-func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByName map[string]corev1.VolumeMount) ([]storage.S3ReadMount, error) {
+func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByVolume map[string][]corev1.VolumeMount) ([]storage.S3ReadMount, error) {
 	readMounts := make([]storage.S3ReadMount, 0)
 	for _, backend := range backends {
 		if backend == nil || backend.MountedRead == nil {
@@ -276,22 +404,17 @@ func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByName map[s
 		if backend.Bucket == "" {
 			return nil, fmt.Errorf("S3 mounted read requires a bucket")
 		}
-		matches := 0
-		for _, candidate := range backends {
-			if candidate != nil && candidate.Valid() && candidate.Endpoint == backend.Endpoint && candidate.Bucket == backend.Bucket {
-				matches++
-			}
-		}
-		if matches > 1 {
+		if matches := matchingS3Backends(backends, backend); matches > 1 {
 			return nil, fmt.Errorf("duplicate mounted S3 backend %q bucket %q", backend.Endpoint, backend.Bucket)
 		}
-		workerMount := backend.MountedRead.WorkerMount
-		if len(validation.IsDNS1123Label(workerMount)) != 0 {
-			return nil, fmt.Errorf("S3 mounted read has invalid worker mount reference %q", workerMount)
+		var subPath *string
+		if backend.MountedRead.MountView != nil {
+			value := backend.MountedRead.GetSubPath()
+			subPath = &value
 		}
-		mount, exists := mountsByName[workerMount]
-		if !exists {
-			return nil, fmt.Errorf("S3 mounted read references unknown worker mount %q", workerMount)
+		mount, err := selectS3Mount(backend.MountedRead.Volume, subPath, mountsByVolume, "read")
+		if err != nil {
+			return nil, err
 		}
 		readMounts = append(readMounts, storage.S3ReadMount{
 			Endpoint: backend.Endpoint,
@@ -306,7 +429,7 @@ func resolveS3ReadMounts(backends []*config.GenericS3Storage, mountsByName map[s
 	return readMounts, nil
 }
 
-func resolveS3WriteMounts(backends []*config.GenericS3Storage, mountsByName map[string]corev1.VolumeMount) ([]storage.S3WriteMount, error) {
+func resolveS3WriteMounts(backends []*config.GenericS3Storage, mountsByVolume map[string][]corev1.VolumeMount) ([]storage.S3WriteMount, error) {
 	writeMounts := make([]storage.S3WriteMount, 0)
 	for _, backend := range backends {
 		if backend == nil || backend.MountedWrite == nil {
@@ -318,25 +441,20 @@ func resolveS3WriteMounts(backends []*config.GenericS3Storage, mountsByName map[
 		if backend.Bucket == "" {
 			return nil, fmt.Errorf("S3 mounted write requires a bucket")
 		}
-		matches := 0
-		for _, candidate := range backends {
-			if candidate != nil && candidate.Valid() && candidate.Endpoint == backend.Endpoint && candidate.Bucket == backend.Bucket {
-				matches++
-			}
-		}
-		if matches > 1 {
+		if matches := matchingS3Backends(backends, backend); matches > 1 {
 			return nil, fmt.Errorf("duplicate mounted S3 backend %q bucket %q", backend.Endpoint, backend.Bucket)
 		}
-		workerMount := backend.MountedWrite.WorkerMount
-		if len(validation.IsDNS1123Label(workerMount)) != 0 {
-			return nil, fmt.Errorf("S3 mounted write has invalid worker mount reference %q", workerMount)
+		var subPath *string
+		if backend.MountedWrite.MountView != nil {
+			value := backend.MountedWrite.GetSubPath()
+			subPath = &value
 		}
-		mount, exists := mountsByName[workerMount]
-		if !exists {
-			return nil, fmt.Errorf("S3 mounted write references unknown worker mount %q", workerMount)
+		mount, err := selectS3Mount(backend.MountedWrite.Volume, subPath, mountsByVolume, "write")
+		if err != nil {
+			return nil, err
 		}
 		if mount.ReadOnly {
-			return nil, fmt.Errorf("S3 mounted write worker mount %q must be writable", workerMount)
+			return nil, fmt.Errorf("S3 mounted write volume %q mount %q must be writable", backend.MountedWrite.Volume, mount.MountPath)
 		}
 		timeout := s3WriteTimeout
 		if configured := backend.MountedWrite.Timeout; configured != nil {
@@ -362,46 +480,45 @@ func resolveS3WriteMounts(backends []*config.GenericS3Storage, mountsByName map[
 	return writeMounts, nil
 }
 
-func render(raw string, data map[string]interface{}, target interface{}) error {
-	t, err := template.New("storage").Option("missingkey=error").Parse(raw)
-	if err != nil {
-		return err
+func matchingS3Backends(backends []*config.GenericS3Storage, backend *config.GenericS3Storage) int {
+	matches := 0
+	for _, candidate := range backends {
+		if candidate != nil && candidate.Valid() && candidate.Endpoint == backend.Endpoint && candidate.Bucket == backend.Bucket {
+			matches++
+		}
 	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, data); err != nil {
-		return err
-	}
-	return decodeNative(buf.Bytes(), target)
+	return matches
 }
 
-func decodeNative(raw []byte, target interface{}) error {
-	reader := yamlreader.NewYAMLReader(bufio.NewReader(bytes.NewReader(raw)))
-	document, err := reader.Read()
-	if err != nil {
-		return err
+func selectS3Mount(volume string, subPath *string, mountsByVolume map[string][]corev1.VolumeMount, direction string) (corev1.VolumeMount, error) {
+	if len(validation.IsDNS1123Label(volume)) != 0 {
+		return corev1.VolumeMount{}, fmt.Errorf("S3 mounted %s has invalid volume reference %q", direction, volume)
 	}
-	for {
-		extra, err := reader.Read()
-		if err == io.EOF {
-			break
+	candidates := mountsByVolume[volume]
+	if len(candidates) == 0 {
+		return corev1.VolumeMount{}, fmt.Errorf("S3 mounted %s references unknown worker volume %q", direction, volume)
+	}
+	if subPath == nil {
+		if len(candidates) != 1 {
+			return corev1.VolumeMount{}, fmt.Errorf("S3 mounted %s volume %q has %d worker mounts; specify SubPath", direction, volume, len(candidates))
 		}
-		if err != nil {
-			return err
+		return candidates[0], nil
+	}
+	var selected corev1.VolumeMount
+	matches := 0
+	for _, candidate := range candidates {
+		if candidate.SubPath == *subPath && candidate.SubPathExpr == "" {
+			selected = candidate
+			matches++
 		}
-		if len(bytes.TrimSpace(extra)) != 0 {
-			return fmt.Errorf("expected exactly one YAML object")
-		}
 	}
-	data, err := yaml.YAMLToJSONStrict(document)
-	if err != nil {
-		return err
+	if matches == 0 {
+		return corev1.VolumeMount{}, fmt.Errorf("S3 mounted %s volume %q has no static mount with subPath %q", direction, volume, *subPath)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
+	if matches > 1 {
+		return corev1.VolumeMount{}, fmt.Errorf("S3 mounted %s volume %q has multiple mounts with subPath %q", direction, volume, *subPath)
 	}
-	return nil
+	return selected, nil
 }
 
 func validName(name string) bool { return len(validation.IsDNS1123Subdomain(name)) == 0 }
@@ -457,7 +574,7 @@ func (p *Plan) validate() error {
 			return fmt.Errorf("invalid storage volume name %q", v.Name)
 		}
 		if _, exists := volumes[v.Name]; exists {
-			return fmt.Errorf("duplicate storage binding %q", v.Name)
+			return fmt.Errorf("duplicate storage volume %q", v.Name)
 		}
 		if v.PersistentVolumeClaim == nil || !validName(v.PersistentVolumeClaim.ClaimName) {
 			return fmt.Errorf("storage volume %q must reference a valid PVC", v.Name)
@@ -471,7 +588,7 @@ func (p *Plan) validate() error {
 	}
 	workspace, exists := volumes[p.WorkspaceVolume]
 	if !exists {
-		return fmt.Errorf("workspace volume %q does not name a storage binding", p.WorkspaceVolume)
+		return fmt.Errorf("workspace volume %q does not name a storage volume", p.WorkspaceVolume)
 	}
 	if workspace.PersistentVolumeClaim.ReadOnly {
 		return fmt.Errorf("workspace volume must be writable")
@@ -490,7 +607,7 @@ func (p *Plan) validate() error {
 	}
 	for _, claim := range p.OwnedClaims {
 		if !claims[claim] {
-			return fmt.Errorf("owned claim %q is not mounted by a storage binding", claim)
+			return fmt.Errorf("owned claim %q is not referenced by a storage volume", claim)
 		}
 	}
 	paths := []string{path.Join(p.WorkDir, p.TaskID)}

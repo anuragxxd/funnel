@@ -1,18 +1,20 @@
 ---
-title: Kubernetes storage bindings
+title: Kubernetes storage
 menu:
   main:
     parent: Compute
     weight: 21
 ---
 
-# Kubernetes storage bindings
+# Kubernetes storage
 
-`Kubernetes.Storage` binds a task workspace to a named Kubernetes volume. A binding either references an existing PVC or supplies native PVC and optional PV templates. Additional bindings can expose data volumes to the worker.
+`Kubernetes.Storage` configures PVC-backed Kubernetes volumes for task workspaces and worker mounts. The `volumes` and `volumeMounts` fields use native Kubernetes objects, and configured volumes must use PVC sources. The `volumeClaimTemplates` and `persistentVolumeTemplates` fields contain native resource objects. `WorkspaceVolume` names the PVC-backed volume Funnel uses for the task workspace. `WorkerContainer` and `ExecutorContainer` select the containers that receive generated mounts when a Pod template has more than one regular container.
 
-When `Storage` is absent, Funnel uses the existing `PVTemplate`, `PVCTemplate`, and Job template behavior. Storage bindings do not change TES inputs, outputs, or task paths. Configured GenericS3 mounted reads and writes require `Kubernetes.Storage` and a submitted storage plan.
+When `Storage` is absent, Funnel keeps the existing `PVTemplate`, `PVCTemplate`, and Job template behavior. Explicit storage does not change TES inputs, outputs, or task paths. Configured GenericS3 mounted reads and writes require `Kubernetes.Storage` and a submitted storage plan.
 
-## Use an existing claim
+## Use an existing PVC
+
+Use `persistentVolumeClaim.claimName` for a claim that an operator already manages. Funnel does not create or delete that claim or its PV.
 
 ```yaml
 Worker:
@@ -21,106 +23,155 @@ Kubernetes:
   JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    Bindings:
-      - Name: workspace
-        ExistingClaim: shared-workspace
+    volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: shared-workspace
 ```
 
-The claim must exist in `JobsNamespace` and support filesystem access from both worker and executor Pods. Funnel creates a task-specific workspace directory and leaves the claim and its PV under operator ownership. `ReadWriteMany` supports placement across nodes. `ReadWriteOnce` requires compatible Pod placement. `ReadWriteOncePod` cannot serve the two Pods and is rejected.
+The claim must exist in `JobsNamespace` and support filesystem access from the worker and executor Pods. Funnel creates a task-specific workspace directory on that claim. `ReadWriteMany` supports placement across nodes. `ReadWriteOnce` requires compatible Pod placement. `ReadWriteOncePod` cannot serve the worker and executor Pods and is rejected.
 
-## Request a claim from a StorageClass
+Every configured volume must use a PVC. For an existing claim, set `persistentVolumeClaim.claimName` to its literal name. For a PVC template, use a Go template in that field that renders to the template's full name. A `volumeMounts` entry refers to a configured volume through its `name` field.
+
+## Provision a PVC through a StorageClass
+
+Use `persistentVolumeClaim.claimName` on a configured volume to refer to a PVC template. The value must match the template's full `metadata.name`, including the task ID.
 
 ```yaml
 Kubernetes:
+  JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    Bindings:
-      - Name: workspace
-        Templates:
-          PVC: |
-            apiVersion: v1
-            kind: PersistentVolumeClaim
-            metadata:
-              name: workspace-{{.TaskId}}
-            spec:
-              storageClassName: research-rwx
-              accessModes: [ReadWriteMany]
-              resources:
-                requests:
-                  storage: 20Gi
+    volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: work-{{.TaskId}}
+    volumeClaimTemplates:
+      - apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: work-{{.TaskId}}
+        spec:
+          storageClassName: research-rwx
+          accessModes:
+            - ReadWriteMany
+          resources:
+            requests:
+              storage: "{{.DiskGb}}Gi"
 ```
 
-Funnel creates the claim in `JobsNamespace` and sets the worker Job as its owner. Kubernetes garbage collection removes the claim after the Job. The StorageClass determines provisioning and reclaim behavior. This configuration requires no GenericS3 bucket and makes no PV API calls during normal submission or cleanup.
+Funnel creates the claim in `JobsNamespace` and sets the worker Job as its owner. Kubernetes garbage collection removes the claim after the Job. The StorageClass determines provisioning and reclaim behavior. This configuration makes no PV API calls during normal submission or cleanup.
 
-## Supply a PV and claim pair
+Funnel requires each PVC template to be a `v1` `PersistentVolumeClaim` with an explicit `metadata.name` that includes `TaskId`. It infers an omitted `metadata.namespace` from the effective job namespace, which uses `JobsNamespace` or falls back to `Namespace`. Do not set `generateName`, owner references, or block volume mode. Every template must be referenced by a configured volume. Funnel does not infer a claim name from a volume name or discover a template by matching a partial name.
 
-Set `Templates.PV` alongside `Templates.PVC` to create an explicit pair. Both fields contain native Kubernetes YAML, including CSI driver settings supplied by the deployment. Funnel fills missing `PVC.spec.volumeName` and `PV.spec.claimRef` references. Conflicting references fail before resource creation.
+Funnel renders Go templates in string values, then decodes each object as a Kubernetes resource. It does not render an entire YAML document as template text. Quote templated quantity values so YAML keeps them as strings. Templates can use `.TaskId`, `.Namespace`, and `.DiskGb`. They can also use `.Bucket`, `.Region`, and `.KmsKeyID` from the first GenericS3 entry when present. Those three values are empty when no GenericS3 entry exists.
 
-Templates accept `TaskId`, `Namespace`, and `DiskGb`. For compatibility with existing CSI templates, `Bucket`, `Region`, and `KmsKeyID` come from the first GenericS3 entry when present. They are empty when no entry exists. Generated PV and PVC names must contain `TaskId`; `generateName` is unsupported. Templates cannot specify owner references or block volumes.
+## Create an explicit PV and PVC pair
 
-## Add a worker data mount
+Set `PVC.spec.volumeName` to the exact `metadata.name` of a `persistentVolumeTemplates` entry. Funnel fills a missing PV `spec.claimRef` with that PVC's name and namespace. If the template provides a conflicting reference, Funnel rejects it before creating resources.
 
 ```yaml
 Kubernetes:
+  JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    Bindings:
-      - Name: workspace
-        ExistingClaim: shared-workspace
-      - Name: reference-data
-        ExistingClaim: reference-datasets
-        WorkerMounts:
-          - Name: reference-root
-            Mount: |
-              mountPath: /mnt/reference
-              readOnly: true
+    volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: data-{{.TaskId}}
+    volumeClaimTemplates:
+      - apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: data-{{.TaskId}}
+        spec:
+          storageClassName: ""
+          volumeName: disk-{{.TaskId}}
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+    persistentVolumeTemplates:
+      - apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: disk-{{.TaskId}}
+        spec:
+          capacity:
+            storage: 20Gi
+          accessModes:
+            - ReadWriteOnce
+          persistentVolumeReclaimPolicy: Retain
+          storageClassName: ""
+          hostPath:
+            path: /srv/funnel/{{.TaskId}}
 ```
 
-`WorkerMounts` names worker-visible views. Each `Mount` contains one native Kubernetes `volumeMount` YAML object. Its logical `Name` must be unique across the storage configuration. Funnel sets the native volume name from the enclosing binding. `subPath` can restrict a view to a directory. The same workspace binding can also provide a separate root view through `WorkerMounts`. Worker mount paths cannot overlap the task workspace or existing mounts.
+The `hostPath` source makes this example suitable only for a local cluster whose worker and executor Pods use the same node and path. Use the deployment's native CSI or other PV source in a real cluster. Each PV template must be a cluster-scoped `v1` `PersistentVolume` with an explicit `metadata.name` that includes `TaskId`. Do not set `metadata.namespace`, `generateName`, owner references, or block volume mode. A PV template must have exactly one native PV source and link to exactly one PVC template.
 
-Only the workspace reaches executor Pods through generated mounts. Extra worker mounts do not expose data automatically at TES input paths. A storage backend must still prepare those inputs.
+Funnel creates the PV and PVC with task ownership and preserves the existing cleanup lifecycle. Explicit PV storage adds a finalizer to the worker Job. Cleanup requests deletion of owned PVs and the Job before releasing that finalizer. A failed delete request leaves the plan available for retry. The server needs permission to delete these PVs. Finish PV-backed tasks and clean up their resources before removing cluster-scoped deletion permissions. Kubernetes storage-protection finalizers and the storage driver's normal cleanup still apply.
 
-GenericS3 `MountedRead` and `MountedWrite` settings name these worker mounts. Funnel resolves each name and records the mount's `mountPath` as its root in the storage plan. A write mount must be writable. Kubernetes applies `subPath` or `subPathExpr` to the mounted view. Funnel does not append either value, or the S3 prefix, to the root. See [Mounted inputs](../../storage/mounted-inputs/).
+## Add worker mounts
 
-## Job template contract
+`volumeMounts` contains native Kubernetes `volumeMount` objects. Use the configured volume's `name`. You can mount the same volume at multiple paths.
 
-With explicit storage, Funnel renders Job templates with `NeedsPVC: false` and adds the resolved volumes and mounts afterward. Templates that already condition legacy storage on `NeedsPVC` keep their other settings. A template that hardcodes conflicting volumes or mount paths must remove them before enabling bindings.
+```yaml
+Kubernetes:
+  JobsNamespace: funnel-tasks
+  Storage:
+    WorkspaceVolume: workspace
+    volumes:
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: shared-workspace
+      - name: reference-data
+        persistentVolumeClaim:
+          claimName: reference-datasets
+    volumeMounts:
+      - name: reference-data
+        mountPath: /mnt/reference
+        readOnly: true
+        subPath: genomes
+      - name: reference-data
+        mountPath: /mnt/annotations
+        readOnly: true
+        subPath: annotations
+```
 
-Funnel selects the sole regular container by default. For templates with sidecars, set `Storage.WorkerContainer` and `Storage.ExecutorContainer` to the respective main container names. Funnel mounts storage and injects worker configuration only into those containers. Init containers and sidecars retain their template-defined mounts.
+Funnel adds `volumeMounts` to the selected worker container. It generates the workspace mount for the worker and executor. Extra worker mounts do not expose data automatically at TES input paths. A storage backend must still prepare those inputs. Worker mount paths cannot overlap the task workspace, each other, or mounts already in the Job template.
+
+GenericS3 `MountedRead` and `MountedWrite` select a worker mount by volume name and, optionally, its static `subPath`. If one `volumeMounts` entry uses the selected volume, omit `SubPath`. If several entries use that volume, set `SubPath` to the exact `volumeMounts[].subPath` value. Set `SubPath: ""` to select a static root mount. A mount that uses `subPathExpr` can be selected only when it is the unique mount for that volume and `SubPath` is absent.
+
+The selected mount's authored `mountPath` is the S3 root. Funnel does not append the selected `SubPath` or the S3 `Prefix` to that path. A write mount must be writable. The underlying claim must also permit writes.
+
+## Configure Job templates
+
+With explicit storage, Funnel renders Job templates with `NeedsPVC: false` and adds resolved volumes and mounts afterward. Templates that already condition legacy storage on `NeedsPVC` keep their other settings. Remove template-defined volumes or mount paths that conflict with configured storage.
+
+Funnel selects the sole regular container by default. For templates with sidecars, set `Storage.WorkerContainer` and `Storage.ExecutorContainer` to the main container names. Funnel adds storage and worker configuration only to those containers. Init containers and sidecars keep their template-defined mounts.
 
 The worker Job name must equal `TaskId`. `Worker.WorkDir` must be absolute. Per-task plugin overrides cannot change `JobsNamespace`, because a backend reconciles one configured Jobs namespace.
 
 `Kubernetes.WorkerImage` selects the image supplied to the worker Job template and skips server Pod discovery. When it is absent, Funnel keeps the existing image discovery behavior. Templates use `{{.Image}}` to consume that setting.
 
-The server records a versioned plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. Version 4 records mounted S3 reads and writes with their endpoint, bucket, prefix, and worker root. The plan contains no credentials. The worker uses the submitted claim names, namespace, work directory, and mounted routes even with a static ConfigMap. Do not set that environment variable or annotation in templates.
+## Ownership and upgrades
+
+Funnel labels resources it creates and records the worker Job UID. Creation retries accept only resources with matching ownership and specifications. Funnel rejects an existing resource with a conflicting owner or specification instead of adopting it. Operator-owned claims remain under operator control.
+
+Provisioning checks the worker Job before and after each resource creation. If cancellation removes the Job during creation, Funnel deletes a late-created owned PV. A process crash, an ambiguous create response, or a failed compensating deletion can leave an orphan. Recovery requires an orphan cleanup sweep with PV scanning enabled by a PV template. An existing-claim-only configuration does not scan cluster-scoped PVs.
+
+Funnel records a version 4 plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. The plan records resolved volumes, worker mounts, S3 routes, claim names, namespace, and work directory. It contains no credentials. Existing Jobs with version 4 plans remain compatible. Do not set the plan environment variable or annotation in templates.
+
+The config schema changed. Migrate configurations to native objects and rebuild Go RPC plugins against the updated config package before exchanging configuration with them. The schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. It reserves `KubernetesStorage` field 2 and the names `Bindings` and `MountedInputs`. `MountedRead` and `MountedWrite` reserve field 1 and the name `WorkerMount`. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are also reserved. Configuration with retired names fails parsing.
+
+For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `persistentVolumeClaim.claimName`. Keep `WorkerImage` as an independent field.
+
+Chicago's `S3FilesFilesystemId` used field 20, which conflicts with upstream `ForbiddenPathPrefixes`. Do not decode old Chicago binary configuration with the upstream schema. Both fields use a length-delimited wire representation, so a decoder cannot distinguish them. Export the configuration with its original schema, move the filesystem ID into the deployment's native CSI PV template, and load the migrated named configuration. Rebuild plugins against the canonical schema before exchanging configuration. Funnel supplies no automatic decoder for the conflicting binary format.
+
+The version 4 decoder cannot run or clean up Jobs with version 1, 2, or 3 plans. Finish those tasks and clean up their Jobs with a compatible older binary before upgrading. Jobs without a storage plan still require the legacy cleanup configuration during migration. These requirements apply whether the task uses existing claims or native PVC templates.
 
 Helm resolves deployment values before Funnel renders task variables. Charts must preserve literal Funnel expressions such as `{{.TaskId}}` through Helm rendering, as they do for existing Funnel Job templates.
-
-## Ownership, retries, and upgrades
-
-Funnel labels resources it creates and records the worker Job UID. Creation retries accept only matching resources with that ownership. An existing resource with a conflicting owner or specification causes submission to fail without adopting it.
-
-Explicit PV bindings add a `funnel.calypr.org/storage-cleanup` finalizer to the worker Job. Cleanup requests deletion of owned PVs and the Job before releasing that finalizer. A failed delete request leaves the plan available for retry. Funnel preserves Kubernetes storage-protection finalizers. PVC garbage collection and the storage driver complete their normal cleanup.
-
-Finalized Jobs let cleanup recover task-selected PV names after server configuration changes. The server still needs permission to delete those PVs. Before removing cluster-scoped permissions, finish old PV-backed tasks and clean their resources. Older legacy Jobs lack the new ownership snapshot and require the legacy cleanup configuration during migration.
-
-Provisioning checks the worker Job before and after each resource creation. If cancellation removes the Job during creation, Funnel deletes the late-created owned PV. A process crash, an ambiguous create response, or a failed compensating deletion can leave an orphan. Recovery then requires orphan cleanup with PV scanning enabled by a PV template. An existing-claim-only configuration does not scan cluster-scoped PVs.
-
-Rebuild Go RPC plugins with the updated config package before passing explicit bindings through them; that package registers the new source variants for gob transport. Each binding must select exactly one of `ExistingClaim` or `Templates`. Duplicate binding names are errors, including duplicates produced by configuration merges.
-
-### Migrate mounted reads, writes, and older snapshots
-
-Configure a mounted S3 read under the matching `GenericS3` backend's `MountedRead` option. Set `WorkerMount` to a named `WorkerMounts` entry. Set `Prefix` to a bucket-relative key prefix, or leave it empty to use the whole bucket. The mounted root represents that prefix. Do not add the prefix or a native subpath to the worker path.
-
-The server resolves mounted reads and writes into the version 4 storage plan. Workers use those submitted routes and ignore static `MountedRead` and `MountedWrite` settings, including when the submitted plan has no mounts. Only the worker accesses the mounted filesystem. For a matching GenericS3 read, the worker copies the input into the task workspace. Unmatched input URLs use the API transfer path. See [Mounted inputs](../../storage/mounted-inputs/) for output publication behavior.
-
-The version 4 decoder cannot run or clean up Jobs with version 1, 2, or 3 snapshots. Finish those tasks and clean up their Jobs with a compatible older binary before upgrading. This applies to both existing-claim and PVC-template storage configurations.
-
-The canonical schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. `KubernetesStorage` field 5 and the `MountedInputs` field name are reserved. Config field 34 and its old top-level `MountedInputs` name are also reserved. The old string-valued `KubernetesStorageBinding.WorkerMounts` field 4 is reserved; named mount records use field 5. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are reserved. Configuration with those retired names fails parsing instead of silently selecting the wrong storage behavior.
-
-For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `ExistingClaim`. Keep `WorkerImage` as an independent field.
-
-Chicago's `S3FilesFilesystemId` used field 20, which conflicts with upstream `ForbiddenPathPrefixes`. Do not decode old Chicago binary configuration with the upstream schema. Both fields use a length-delimited wire representation, so the decoder cannot distinguish them. Export that configuration using its original schema, move the filesystem ID into the deployment's native CSI PV template, and load the migrated named configuration. Rebuild plugins against the canonical schema before exchanging configuration. Funnel supplies no automatic decoder for the conflicting binary format.
 
 ## Verify against a local cluster
 

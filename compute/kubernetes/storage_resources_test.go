@@ -9,6 +9,7 @@ import (
 
 	"github.com/ohsu-comp-bio/funnel/compute/kubernetes/storageplan"
 	"github.com/ohsu-comp-bio/funnel/config"
+	"google.golang.org/protobuf/types/known/structpb"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -585,9 +586,9 @@ func TestUsesPersistentVolumes(t *testing.T) {
 		want    bool
 	}{
 		{"legacy", nil, true},
-		{"existing claim", &config.KubernetesStorage{Bindings: []*config.KubernetesStorageBinding{{Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared"}}}}, false},
-		{"dynamic claim", &config.KubernetesStorage{Bindings: []*config.KubernetesStorageBinding{{Source: &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: "claim"}}}}}, false},
-		{"static volume", &config.KubernetesStorage{Bindings: []*config.KubernetesStorageBinding{{Source: &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: "claim", PV: "volume"}}}}}, true},
+		{"existing claim", &config.KubernetesStorage{Volumes: []*structpb.Struct{{}}}, false},
+		{"dynamic claim", &config.KubernetesStorage{VolumeClaimTemplates: []*structpb.Struct{{}}}, false},
+		{"static volume", &config.KubernetesStorage{PersistentVolumeTemplates: []*structpb.Struct{{}}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := &Backend{conf: &config.Config{Kubernetes: &config.Kubernetes{Storage: tc.storage}}}

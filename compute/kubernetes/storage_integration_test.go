@@ -14,6 +14,7 @@ import (
 	"github.com/ohsu-comp-bio/funnel/events"
 	"github.com/ohsu-comp-bio/funnel/logger"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	"google.golang.org/protobuf/types/known/structpb"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,9 +24,9 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// TestStorageBindingsLive verifies shared filesystem mounts and Kubernetes GC.
+// TestNativeStorageLive verifies shared filesystem mounts and Kubernetes GC.
 // It requires a disposable cluster with the standard StorageClass and alpine:3.21.
-func TestStorageBindingsLive(t *testing.T) {
+func TestNativeStorageLive(t *testing.T) {
 	kubeconfig := os.Getenv("FUNNEL_KUBERNETES_TEST_KUBECONFIG")
 	if kubeconfig == "" {
 		t.Skip("set FUNNEL_KUBERNETES_TEST_KUBECONFIG to run against a disposable cluster")
@@ -68,9 +69,19 @@ func TestStorageBindingsLive(t *testing.T) {
 			conf.Kubernetes.DisableReconciler = true
 			conf.Kubernetes.ConfigMapTemplate, conf.Kubernetes.ServiceAccountTemplate, conf.Kubernetes.RoleTemplate, conf.Kubernetes.RoleBindingTemplate = "", "", "", ""
 			conf.Kubernetes.WorkerTemplate = liveStorageWorkerTemplate
-			binding := &config.KubernetesStorageBinding{Name: "workspace", Source: &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: liveStorageClaimTemplate}}}
+			claimTemplate := liveStorageClaimTemplate
+			storageConfig := &config.KubernetesStorage{
+				WorkspaceVolume: "workspace",
+				Volumes: []*structpb.Struct{nativeResource(t, `name: workspace
+persistentVolumeClaim:
+  claimName: work-{{.TaskId}}`)},
+				VolumeClaimTemplates: []*structpb.Struct{nativeResource(t, claimTemplate)},
+			}
 			if tc.pair {
-				binding.Source = &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: strings.Replace(liveStorageClaimTemplate, "storageClassName: standard", "storageClassName: ''", 1), PV: liveStorageVolumeTemplate}}
+				claimTemplate = strings.Replace(liveStorageClaimTemplate, "storageClassName: standard", "storageClassName: ''", 1)
+				claimTemplate = strings.Replace(claimTemplate, "spec:\n", "spec:\n  volumeName: data-{{.TaskId}}\n", 1)
+				storageConfig.VolumeClaimTemplates = []*structpb.Struct{nativeResource(t, claimTemplate)}
+				storageConfig.PersistentVolumeTemplates = []*structpb.Struct{nativeResource(t, liveStorageVolumeTemplate)}
 			}
 			if tc.external {
 				storageClass := "standard"
@@ -81,9 +92,12 @@ func TestStorageBindingsLive(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				binding.Source = &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: "operator-workspace"}
+				storageConfig.Volumes[0] = nativeResource(t, `name: workspace
+persistentVolumeClaim:
+  claimName: operator-workspace`)
+				storageConfig.VolumeClaimTemplates = nil
 			}
-			conf.Kubernetes.Storage = &config.KubernetesStorage{WorkspaceVolume: "workspace", Bindings: []*config.KubernetesStorageBinding{binding}}
+			conf.Kubernetes.Storage = storageConfig
 			backend := &Backend{client: client, conf: conf, event: events.Noop{}, log: logger.NewLogger("storage-live", logger.DefaultConfig())}
 			task := &tes.Task{Id: fmt.Sprintf("task-%d", time.Now().UnixNano())}
 			if err := backend.Submit(ctx, task, conf); err != nil {

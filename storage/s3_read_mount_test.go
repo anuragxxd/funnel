@@ -17,7 +17,7 @@ func mountedConfig(endpoint, bucket string) *config.Config {
 	c := config.EmptyConfig()
 	c.AmazonS3.Disabled = true
 	c.GoogleStorage.Disabled = true
-	c.GenericS3 = []*config.GenericS3Storage{{Endpoint: endpoint, Bucket: bucket, Key: "key", Secret: "secret", Region: "us-east-1", MountedRead: &config.S3MountedRead{WorkerMount: "reference", Prefix: "ref"}}}
+	c.GenericS3 = []*config.GenericS3Storage{{Endpoint: endpoint, Bucket: bucket, Key: "key", Secret: "secret", Region: "us-east-1", MountedRead: &config.S3MountedRead{Volume: "reference", Prefix: "ref"}}}
 	return c
 }
 

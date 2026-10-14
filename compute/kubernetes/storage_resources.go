@@ -299,10 +299,5 @@ func (b *Backend) usesPersistentVolumes() bool {
 	if b.conf.Kubernetes.Storage == nil {
 		return true
 	}
-	for _, binding := range b.conf.Kubernetes.Storage.Bindings {
-		if binding.GetTemplates().GetPV() != "" {
-			return true
-		}
-	}
-	return false
+	return len(b.conf.Kubernetes.Storage.PersistentVolumeTemplates) > 0
 }

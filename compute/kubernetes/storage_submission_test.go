@@ -14,6 +14,7 @@ import (
 	plugin "github.com/ohsu-comp-bio/funnel/plugins/proto"
 	"github.com/ohsu-comp-bio/funnel/storage"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	"google.golang.org/protobuf/types/known/structpb"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/yaml"
 )
 
 const boundClaimTemplate = `apiVersion: v1
@@ -29,6 +31,19 @@ kind: PersistentVolumeClaim
 metadata:
   name: work-{{.TaskId}}
 spec:
+  storageClassName: research
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 1Gi
+`
+
+const boundPairClaimTemplate = `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: work-{{.TaskId}}
+spec:
+  volumeName: data-{{.TaskId}}
   storageClassName: research
   accessModes: [ReadWriteMany]
   resources:
@@ -51,7 +66,20 @@ spec:
     volumeHandle: data-{{.TaskId}}
 `
 
-func bindingConfig(t *testing.T, binding *config.KubernetesStorageBinding) *config.Config {
+func nativeResource(t *testing.T, manifest string) *structpb.Struct {
+	t.Helper()
+	var resource map[string]interface{}
+	if err := yaml.Unmarshal([]byte(manifest), &resource); err != nil {
+		t.Fatalf("parsing native Kubernetes resource: %v", err)
+	}
+	value, err := structpb.NewStruct(resource)
+	if err != nil {
+		t.Fatalf("converting native Kubernetes resource: %v", err)
+	}
+	return value
+}
+
+func bindingConfig(t *testing.T, storageConfig *config.KubernetesStorage) *config.Config {
 	t.Helper()
 	conf := config.DefaultConfig()
 	workerTemplate, err := os.ReadFile("../../config/kubernetes/worker-job.yaml")
@@ -64,17 +92,37 @@ func bindingConfig(t *testing.T, binding *config.KubernetesStorageBinding) *conf
 	conf.Kubernetes.ServiceAccountTemplate = ""
 	conf.Kubernetes.RoleTemplate = ""
 	conf.Kubernetes.RoleBindingTemplate = ""
-	conf.Kubernetes.Storage = &config.KubernetesStorage{WorkspaceVolume: binding.Name, Bindings: []*config.KubernetesStorageBinding{binding}}
+	conf.Kubernetes.Storage = storageConfig
 	conf.GenericS3 = nil
 	return conf
 }
 
-func existingBinding(claim string) *config.KubernetesStorageBinding {
-	return &config.KubernetesStorageBinding{Name: "workspace", Source: &config.KubernetesStorageBinding_ExistingClaim{ExistingClaim: claim}}
+func existingStorage(t *testing.T, claim string) *config.KubernetesStorage {
+	t.Helper()
+	return &config.KubernetesStorage{
+		WorkspaceVolume: "workspace",
+		Volumes: []*structpb.Struct{nativeResource(t, `name: workspace
+persistentVolumeClaim:
+  claimName: `+claim)},
+	}
 }
 
-func createdBinding(pv string) *config.KubernetesStorageBinding {
-	return &config.KubernetesStorageBinding{Name: "workspace", Source: &config.KubernetesStorageBinding_Templates{Templates: &config.KubernetesStorageTemplates{PVC: boundClaimTemplate, PV: pv}}}
+func createdStorage(t *testing.T, withPV bool) *config.KubernetesStorage {
+	t.Helper()
+	claimTemplate := boundClaimTemplate
+	var pvTemplates []*structpb.Struct
+	if withPV {
+		claimTemplate = boundPairClaimTemplate
+		pvTemplates = []*structpb.Struct{nativeResource(t, boundVolumeTemplate)}
+	}
+	return &config.KubernetesStorage{
+		WorkspaceVolume: "workspace",
+		Volumes: []*structpb.Struct{nativeResource(t, `name: workspace
+persistentVolumeClaim:
+  claimName: work-{{.TaskId}}`)},
+		VolumeClaimTemplates:      []*structpb.Struct{nativeResource(t, claimTemplate)},
+		PersistentVolumeTemplates: pvTemplates,
+	}
 }
 
 func bindingClient() *fake.Clientset {
@@ -87,21 +135,21 @@ func bindingClient() *fake.Clientset {
 	return client
 }
 
-func TestStorageBindingsSubmitAndCleanup(t *testing.T) {
+func TestNativeStorageSubmitAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		binding *config.KubernetesStorageBinding
+		storage *config.KubernetesStorage
 		claim   string
 		ownsPV  bool
 	}{
-		{"existing", existingBinding("research-data"), "research-data", false},
-		{"claim", createdBinding(""), "work-task-a", false},
-		{"pair", createdBinding(boundVolumeTemplate), "work-task-a", true},
+		{"existing", existingStorage(t, "research-data"), "research-data", false},
+		{"claim", createdStorage(t, false), "work-task-a", false},
+		{"pair", createdStorage(t, true), "work-task-a", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			client := bindingClient()
-			conf := bindingConfig(t, tc.binding)
+			conf := bindingConfig(t, tc.storage)
 			external := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "research-data", Namespace: "tasks", Labels: map[string]string{"owner": "operator"}}, Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}}}
 			if _, err := client.CoreV1().PersistentVolumeClaims("tasks").Create(ctx, external, metav1.CreateOptions{}); err != nil {
 				t.Fatal(err)
@@ -122,6 +170,21 @@ func TestStorageBindingsSubmitAndCleanup(t *testing.T) {
 			}
 			if plan.Volumes[0].PersistentVolumeClaim.ClaimName != tc.claim || plan.Namespace != "tasks" {
 				t.Fatalf("wrong submission snapshot: %+v", plan)
+			}
+			if tc.ownsPV {
+				if len(plan.OwnedClaims) != 1 || len(plan.OwnedVolumes) != 1 || plan.OwnedVolumes[0] != "data-task-a" {
+					t.Fatalf("native PVC/PV ownership was not recorded: %+v", plan)
+				}
+				claim, err := client.CoreV1().PersistentVolumeClaims("tasks").Get(ctx, tc.claim, metav1.GetOptions{})
+				if err != nil || claim.Spec.VolumeName != "data-task-a" {
+					t.Fatalf("PVC must explicitly bind to its rendered PV: claim=%v error=%v", claim, err)
+				}
+				pv, err := client.CoreV1().PersistentVolumes().Get(ctx, "data-task-a", metav1.GetOptions{})
+				if err != nil || pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != tc.claim || pv.Spec.ClaimRef.Namespace != "tasks" {
+					t.Fatalf("PV must be cross-referenced to its rendered PVC: PV=%v error=%v", pv, err)
+				}
+			} else if len(plan.OwnedVolumes) != 0 {
+				t.Fatalf("unexpected task-owned PVs: %v", plan.OwnedVolumes)
 			}
 			if tc.name != "existing" {
 				claim, err := client.CoreV1().PersistentVolumeClaims("tasks").Get(ctx, tc.claim, metav1.GetOptions{})
@@ -158,13 +221,13 @@ func TestStorageBindingsSubmitAndCleanup(t *testing.T) {
 func TestStoragePlanSurvivesConfigurationChange(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(ctx, &tes.Task{Id: "snapshot"}, conf); err != nil {
 		t.Fatal(err)
 	}
 	// A replacement backend has different configuration but reads the old Job's ownership.
-	restarted := &Backend{client: client, conf: bindingConfig(t, existingBinding("other-claim")), event: &noopEventWriter{}, log: backend.log}
+	restarted := &Backend{client: client, conf: bindingConfig(t, existingStorage(t, "other-claim")), event: &noopEventWriter{}, log: backend.log}
 	if err := restarted.Cancel(ctx, "snapshot"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +242,7 @@ func TestStorageSubmissionFailureCleansOwnedPV(t *testing.T) {
 	client.PrependReactor("create", "persistentvolumeclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("quota exceeded")
 	})
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(ctx, &tes.Task{Id: "failure"}, conf); err == nil || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Fatalf("expected claim creation error, got %v", err)
@@ -200,7 +263,7 @@ func TestStorageSubmissionPreservesCreationAndRollbackErrors(t *testing.T) {
 	client.PrependReactor("delete", "persistentvolumes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, rollbackErr
 	})
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	err := backend.Submit(ctx, &tes.Task{Id: "rollback-failure"}, conf)
 	if !errors.Is(err, creationErr) || !errors.Is(err, rollbackErr) {
@@ -218,14 +281,14 @@ func TestStorageSubmissionPreservesCreationAndRollbackErrors(t *testing.T) {
 func TestStoragePluginOverridesAreTaskLocal(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()
-	conf := bindingConfig(t, existingBinding("default-claim"))
+	conf := bindingConfig(t, existingStorage(t, "default-claim"))
 	conf.Plugins = &config.Plugins{}
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	for _, id := range []string{"alice", "bob"} {
 		if _, err := client.CoreV1().PersistentVolumeClaims("tasks").Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: id + "-claim", Namespace: "tasks"}, Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}}}, metav1.CreateOptions{}); err != nil {
 			t.Fatal(err)
 		}
-		override := &config.Config{Kubernetes: &config.Kubernetes{Storage: bindingConfig(t, existingBinding(id+"-claim")).Kubernetes.Storage}}
+		override := &config.Config{Kubernetes: &config.Kubernetes{Storage: bindingConfig(t, existingStorage(t, id+"-claim")).Kubernetes.Storage}}
 		taskCtx := context.WithValue(ctx, "pluginResponse", &plugin.JobResponse{Config: override})
 		if err := backend.WriteEvent(taskCtx, events.NewTaskCreated(&tes.Task{Id: id})); err != nil {
 			t.Fatal(err)
@@ -239,38 +302,41 @@ func TestStoragePluginOverridesAreTaskLocal(t *testing.T) {
 			t.Fatalf("wrong tenant binding: %v %v", plan, err)
 		}
 	}
-	if conf.Kubernetes.Storage.Bindings[0].GetExistingClaim() != "default-claim" {
+	persistentVolumeClaim, ok := conf.Kubernetes.Storage.Volumes[0].AsMap()["persistentVolumeClaim"].(map[string]interface{})
+	if !ok || persistentVolumeClaim["claimName"] != "default-claim" {
 		t.Fatal("plugin mutated server defaults")
 	}
 }
 
 func TestInvalidStorageFailsBeforeCreatingResources(t *testing.T) {
 	client := bindingClient()
-	conf := bindingConfig(t, existingBinding("shared"))
+	conf := bindingConfig(t, existingStorage(t, "shared"))
 	conf.Kubernetes.Storage.WorkspaceVolume = "missing"
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(context.Background(), &tes.Task{Id: "invalid"}, conf); err == nil {
-		t.Fatal("invalid binding succeeded")
+		t.Fatal("invalid storage succeeded")
 	}
 	if len(client.Actions()) != 0 {
 		t.Fatalf("invalid binding reached Kubernetes: %v", client.Actions())
 	}
 }
 
-func TestS3MountedReadReferencesResolveBeforeResourceCreation(t *testing.T) {
-	for _, mountName := range []string{"missing", "reference-root"} {
-		t.Run(mountName, func(t *testing.T) {
+func TestS3MountedReadVolumeReferencesResolveBeforeResourceCreation(t *testing.T) {
+	for _, volumeName := range []string{"missing", "workspace"} {
+		t.Run(volumeName, func(t *testing.T) {
 			ctx := context.Background()
 			client := bindingClient()
-			conf := bindingConfig(t, existingBinding("shared"))
-			conf.Kubernetes.Storage.Bindings[0].WorkerMounts = []*config.KubernetesWorkerMount{{Name: "reference-root", Mount: "mountPath: /reference\nreadOnly: true"}}
+			conf := bindingConfig(t, existingStorage(t, "shared"))
+			conf.Kubernetes.Storage.VolumeMounts = []*structpb.Struct{nativeResource(t, `name: workspace
+mountPath: /reference
+readOnly: true`)}
 			conf.GenericS3 = []*config.GenericS3Storage{{
 				Endpoint: "https://s3.example.test",
 				Key:      "access-key",
 				Secret:   "access-secret",
 				Bucket:   "reference",
 				MountedRead: &config.S3MountedRead{
-					WorkerMount: mountName,
+					Volume: volumeName,
 				},
 			}}
 			if _, err := client.CoreV1().PersistentVolumeClaims("tasks").Create(ctx, &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "tasks"}, Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}}}, metav1.CreateOptions{}); err != nil {
@@ -279,8 +345,8 @@ func TestS3MountedReadReferencesResolveBeforeResourceCreation(t *testing.T) {
 			client.ClearActions()
 			backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 			err := backend.Submit(ctx, &tes.Task{Id: "input-binding"}, conf)
-			if mountName == "missing" {
-				if err == nil || !strings.Contains(err.Error(), "unknown worker mount") {
+			if volumeName == "missing" {
+				if err == nil || !strings.Contains(err.Error(), "unknown") {
 					t.Fatalf("missing reference was not rejected: %v", err)
 				}
 				if len(client.Actions()) != 0 {
@@ -300,7 +366,7 @@ func TestS3MountedReadReferencesResolveBeforeResourceCreation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(plan.S3ReadMounts) != 1 || plan.S3ReadMounts[0] != (storage.S3ReadMount{Endpoint: "https://s3.example.test", Bucket: "reference", Prefix: "", Root: "/reference"}) {
-				t.Fatalf("submitted Job lost the named S3 read mount: %+v", plan.S3ReadMounts)
+				t.Fatalf("submitted Job lost the volume-based S3 read mount: %+v", plan.S3ReadMounts)
 			}
 		})
 	}
@@ -309,7 +375,7 @@ func TestS3MountedReadReferencesResolveBeforeResourceCreation(t *testing.T) {
 func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(ctx, &tes.Task{Id: "retry"}, conf); err != nil {
 		t.Fatal(err)
@@ -329,7 +395,7 @@ func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 	if err != nil || job.Annotations[storageplan.Annotation] == "" || len(job.Finalizers) == 0 {
 		t.Fatalf("failed cleanup lost its ownership snapshot: %v %v", job, err)
 	}
-	backend.conf = bindingConfig(t, existingBinding("different-default"))
+	backend.conf = bindingConfig(t, existingStorage(t, "different-default"))
 	if err := backend.Cancel(ctx, "retry"); err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +407,7 @@ func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 func TestStorageCleanupRetainsFinalizerAfterJobDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(ctx, &tes.Task{Id: "retry-job"}, conf); err != nil {
 		t.Fatal(err)
@@ -361,7 +427,7 @@ func TestStorageCleanupRetainsFinalizerAfterJobDeleteFailure(t *testing.T) {
 	if err != nil || len(job.Finalizers) == 0 {
 		t.Fatalf("failed Job deletion lost its cleanup finalizer: %v %v", job, err)
 	}
-	backend.conf = bindingConfig(t, existingBinding("different-default"))
+	backend.conf = bindingConfig(t, existingStorage(t, "different-default"))
 	backend.database = &mockDatabase{tasks: map[string]*tes.Task{"retry-job": {Id: "retry-job", State: tes.Complete}}}
 	backend.CleanOrphanedResources(ctx)
 	if _, err := client.BatchV1().Jobs("tasks").Get(ctx, "retry-job", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
@@ -372,12 +438,12 @@ func TestStorageCleanupRetainsFinalizerAfterJobDeleteFailure(t *testing.T) {
 func TestStorageOrphanCleanupUsesFinalizedJobAfterConfigChange(t *testing.T) {
 	ctx := context.Background()
 	client := bindingClient()
-	conf := bindingConfig(t, createdBinding(boundVolumeTemplate))
+	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(ctx, &tes.Task{Id: "orphan"}, conf); err != nil {
 		t.Fatal(err)
 	}
-	backend.conf = bindingConfig(t, existingBinding("different-default"))
+	backend.conf = bindingConfig(t, existingStorage(t, "different-default"))
 	backend.database = &mockDatabase{tasks: map[string]*tes.Task{"orphan": {Id: "orphan", State: tes.Complete}}}
 	client.ClearActions()
 	backend.CleanOrphanedResources(ctx)
@@ -393,9 +459,9 @@ func TestStorageOrphanCleanupUsesFinalizedJobAfterConfigChange(t *testing.T) {
 
 func TestStorageNamespaceOverrideRejectedBeforeCreation(t *testing.T) {
 	client := bindingClient()
-	conf := bindingConfig(t, existingBinding("shared"))
+	conf := bindingConfig(t, existingStorage(t, "shared"))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
-	override := bindingConfig(t, existingBinding("shared"))
+	override := bindingConfig(t, existingStorage(t, "shared"))
 	override.Kubernetes.JobsNamespace = "another-namespace"
 	if err := backend.Submit(context.Background(), &tes.Task{Id: "namespace"}, override); err == nil || !strings.Contains(err.Error(), "JobsNamespace") {
 		t.Fatalf("expected namespace override error, got %v", err)
@@ -407,9 +473,9 @@ func TestStorageNamespaceOverrideRejectedBeforeCreation(t *testing.T) {
 
 func TestStorageSinglePodWorkspaceRejected(t *testing.T) {
 	client := bindingClient()
-	binding := createdBinding("")
-	binding.GetTemplates().PVC = strings.ReplaceAll(boundClaimTemplate, "ReadWriteMany", "ReadWriteOncePod")
-	conf := bindingConfig(t, binding)
+	storageConfig := createdStorage(t, false)
+	storageConfig.VolumeClaimTemplates[0] = nativeResource(t, strings.ReplaceAll(boundClaimTemplate, "ReadWriteMany", "ReadWriteOncePod"))
+	conf := bindingConfig(t, storageConfig)
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	if err := backend.Submit(context.Background(), &tes.Task{Id: "single-pod"}, conf); err == nil {
 		t.Fatal("single-pod workspace cannot serve worker and executor")

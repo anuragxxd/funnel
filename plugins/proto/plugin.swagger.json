@@ -589,13 +589,6 @@
         "WorkspaceVolume": {
           "type": "string"
         },
-        "Bindings": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "$ref": "#/definitions/configKubernetesStorageBinding"
-          }
-        },
         "WorkerContainer": {
           "type": "string",
           "description": "WorkerContainer selects the worker container receiving generated mounts\nand plan environment. It may be empty when the pod has one regular\ncontainer; set it when the pod has multiple regular containers."
@@ -603,56 +596,33 @@
         "ExecutorContainer": {
           "type": "string",
           "description": "ExecutorContainer selects the executor container receiving generated\nmounts. It may be empty when the pod has one regular\ncontainer; set it when the pod has multiple regular containers."
-        }
-      },
-      "description": "KubernetesStorage describes named volume bindings shared by the worker and\nits executor pods. Each binding selects either an existing claim or native\nYAML templates for a per-task PVC and optional PV."
-    },
-    "configKubernetesStorageBinding": {
-      "type": "object",
-      "properties": {
-        "Name": {
-          "type": "string"
         },
-        "ExistingClaim": {
-          "type": "string"
-        },
-        "Templates": {
-          "$ref": "#/definitions/configKubernetesStorageTemplates"
-        },
-        "WorkerMounts": {
+        "volumes": {
           "type": "array",
           "items": {
-            "type": "object",
-            "$ref": "#/definitions/configKubernetesWorkerMount"
-          },
-          "description": "WorkerMounts contains named native Kubernetes volumeMount YAML snippets.\nThe planner sets each mount's volume name to the binding's Name."
-        }
-      },
-      "description": "KubernetesStorageBinding names a volume source and the native mounts to add\nto worker pods. Executor pods derive their mounts from the task's volumes."
-    },
-    "configKubernetesStorageTemplates": {
-      "type": "object",
-      "properties": {
-        "PVC": {
-          "type": "string"
+            "type": "object"
+          }
         },
-        "PV": {
-          "type": "string"
-        }
-      },
-      "description": "KubernetesStorageTemplates contains native Kubernetes YAML resource bodies."
-    },
-    "configKubernetesWorkerMount": {
-      "type": "object",
-      "properties": {
-        "Name": {
-          "type": "string"
+        "volumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         },
-        "Mount": {
-          "type": "string"
+        "volumeClaimTemplates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "persistentVolumeTemplates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       },
-      "description": "KubernetesWorkerMount gives a native worker mount a stable logical name."
+      "description": "KubernetesStorage describes native Kubernetes storage resources and mounts."
     },
     "configLocalStorage": {
       "type": "object",
@@ -874,12 +844,15 @@
     "configS3MountedRead": {
       "type": "object",
       "properties": {
-        "WorkerMount": {
-          "type": "string"
-        },
         "Prefix": {
           "type": "string",
           "description": "Prefix is bucket-relative. An empty prefix mounts the whole bucket."
+        },
+        "Volume": {
+          "type": "string"
+        },
+        "SubPath": {
+          "type": "string"
         }
       },
       "description": "S3MountedRead configures a read-only S3 prefix mounted into a Kubernetes worker."
@@ -887,9 +860,6 @@
     "configS3MountedWrite": {
       "type": "object",
       "properties": {
-        "WorkerMount": {
-          "type": "string"
-        },
         "Prefix": {
           "type": "string",
           "description": "Prefix is bucket-relative. An empty prefix mounts the whole bucket."
@@ -897,6 +867,12 @@
         "Timeout": {
           "type": "string",
           "description": "Timeout bounds object visibility polling after a worker copies output files.\nA nil value uses the default timeout."
+        },
+        "Volume": {
+          "type": "string"
+        },
+        "SubPath": {
+          "type": "string"
         }
       },
       "description": "S3MountedWrite configures output publication through a writable Kubernetes worker mount."
@@ -1182,6 +1158,14 @@
         }
       },
       "additionalProperties": {}
+    },
+    "protobufNullValue": {
+      "type": "string",
+      "enum": [
+        "NULL_VALUE"
+      ],
+      "default": "NULL_VALUE",
+      "description": "`NullValue` is a singleton enumeration to represent the null value for the\n`Value` type union.\n\nThe JSON representation for `NullValue` is JSON `null`.\n\n - NULL_VALUE: Null value."
     },
     "rpcStatus": {
       "type": "object",

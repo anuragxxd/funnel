@@ -11,44 +11,48 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestKubernetesStorageConfigRoundTrip(t *testing.T) {
 	input := []byte(`
 Kubernetes:
   Storage:
-    WorkspaceVolume: shared
+    WorkspaceVolume: workspace
     WorkerContainer: funnel-worker
     ExecutorContainer: funnel-executor
-    Bindings:
-      - Name: shared-inputs
-        ExistingClaim: shared-data
-        WorkerMounts:
-          - Name: input-view
-            Mount: |-
-              mountPath: /data
-              subPath: inputs
-          - Name: output-view
-            Mount: |-
-              mountPath: /outputs
-      - Name: mounted-s3
-        Templates:
-          PVC: |-
-            apiVersion: v1
-            kind: PersistentVolumeClaim
-          PV: |-
-            apiVersion: v1
-            kind: PersistentVolume
+    volumes:
+      - name: task-data
+        persistentVolumeClaim:
+          claimName: claim-{{.TaskId}}
+    volumeMounts:
+      - name: task-data
+        mountPath: /data
+        subPath: inputs
+    volumeClaimTemplates:
+      - apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: claim-{{.TaskId}}
+        spec:
+          volumeName: pv-{{.TaskId}}
+    persistentVolumeTemplates:
+      - apiVersion: v1
+        kind: PersistentVolume
+        metadata:
+          name: pv-{{.TaskId}}
 GenericS3:
   - Endpoint: https://s3.example.test
     Key: access
     Secret: secret
     Bucket: bucket
     MountedRead:
-      WorkerMount: input-view
+      Volume: task-data
+      SubPath: ""
       Prefix: prefix/
     MountedWrite:
-      WorkerMount: output-view
+      Volume: task-data
+      SubPath: results
       Prefix: results/
       Timeout: 90s
 `)
@@ -58,6 +62,26 @@ GenericS3:
 		t.Fatal("parse storage config:", err)
 	}
 
+	volume := mustStruct(t, map[string]any{
+		"name":                  "task-data",
+		"persistentVolumeClaim": map[string]any{"claimName": "claim-{{.TaskId}}"},
+	})
+	volumeMount := mustStruct(t, map[string]any{
+		"name":      "task-data",
+		"mountPath": "/data",
+		"subPath":   "inputs",
+	})
+	claimTemplate := mustStruct(t, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PersistentVolumeClaim",
+		"metadata":   map[string]any{"name": "claim-{{.TaskId}}"},
+		"spec":       map[string]any{"volumeName": "pv-{{.TaskId}}"},
+	})
+	pvTemplate := mustStruct(t, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PersistentVolume",
+		"metadata":   map[string]any{"name": "pv-{{.TaskId}}"},
+	})
 	want := &Config{
 		GenericS3: []*GenericS3Storage{{
 			Endpoint: "https://s3.example.test",
@@ -65,37 +89,26 @@ GenericS3:
 			Secret:   "secret",
 			Bucket:   "bucket",
 			MountedWrite: &S3MountedWrite{
-				WorkerMount: "output-view",
-				Prefix:      "results/",
-				Timeout:     durationpb.New(90 * time.Second),
+				Volume:    "task-data",
+				MountView: &S3MountedWrite_SubPath{SubPath: "results"},
+				Prefix:    "results/",
+				Timeout:   durationpb.New(90 * time.Second),
 			},
 			MountedRead: &S3MountedRead{
-				WorkerMount: "input-view",
-				Prefix:      "prefix/",
+				Volume:    "task-data",
+				MountView: &S3MountedRead_SubPath{SubPath: ""},
+				Prefix:    "prefix/",
 			},
 		}},
 		Kubernetes: &Kubernetes{
 			Storage: &KubernetesStorage{
-				WorkspaceVolume:   "shared",
-				WorkerContainer:   "funnel-worker",
-				ExecutorContainer: "funnel-executor",
-				Bindings: []*KubernetesStorageBinding{
-					{
-						Name:   "shared-inputs",
-						Source: &KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"},
-						WorkerMounts: []*KubernetesWorkerMount{
-							{Name: "input-view", Mount: "mountPath: /data\nsubPath: inputs"},
-							{Name: "output-view", Mount: "mountPath: /outputs"},
-						},
-					},
-					{
-						Name: "mounted-s3",
-						Source: &KubernetesStorageBinding_Templates{Templates: &KubernetesStorageTemplates{
-							PVC: "apiVersion: v1\nkind: PersistentVolumeClaim",
-							PV:  "apiVersion: v1\nkind: PersistentVolume",
-						}},
-					},
-				},
+				WorkspaceVolume:           "workspace",
+				WorkerContainer:           "funnel-worker",
+				ExecutorContainer:         "funnel-executor",
+				Volumes:                   []*structpb.Struct{volume},
+				VolumeMounts:              []*structpb.Struct{volumeMount},
+				VolumeClaimTemplates:      []*structpb.Struct{claimTemplate},
+				PersistentVolumeTemplates: []*structpb.Struct{pvTemplate},
 			},
 		},
 	}
@@ -127,22 +140,25 @@ func TestKubernetesStorageAbsentKeepsLegacyConfigShape(t *testing.T) {
 }
 
 func TestKubernetesStorageGobRoundTrip(t *testing.T) {
+	volume := mustStruct(t, map[string]any{
+		"name":    "task-data",
+		"null":    nil,
+		"count":   float64(3),
+		"enabled": true,
+		"nested":  map[string]any{"message": "nested string"},
+		"values":  []any{"string", float64(4), true, nil, []any{"nested list"}},
+	})
 	want := &Config{
+		GenericS3: []*GenericS3Storage{{
+			MountedRead: &S3MountedRead{Volume: "task-data"},
+			MountedWrite: &S3MountedWrite{
+				Volume:    "task-data",
+				MountView: &S3MountedWrite_SubPath{SubPath: ""},
+			},
+		}},
 		Kubernetes: &Kubernetes{
 			Storage: &KubernetesStorage{
-				Bindings: []*KubernetesStorageBinding{
-					{
-						Name:   "shared-inputs",
-						Source: &KubernetesStorageBinding_ExistingClaim{ExistingClaim: "shared-data"},
-					},
-					{
-						Name: "mounted-s3",
-						Source: &KubernetesStorageBinding_Templates{Templates: &KubernetesStorageTemplates{
-							PVC: "kind: PersistentVolumeClaim",
-							PV:  "kind: PersistentVolume",
-						}},
-					},
-				},
+				Volumes: []*structpb.Struct{volume},
 			},
 		},
 	}
@@ -158,6 +174,15 @@ func TestKubernetesStorageGobRoundTrip(t *testing.T) {
 	}
 	if !proto.Equal(&got, want) {
 		t.Fatalf("gob round-trip mismatch:\n got: %v\nwant: %v", &got, want)
+	}
+	if got.GenericS3[0].MountedRead.MountView != nil {
+		t.Fatal("absent read SubPath became present during gob round-trip")
+	}
+	if got.GenericS3[0].MountedWrite.GetSubPath() != "" {
+		t.Fatal("present empty write SubPath did not survive gob round-trip")
+	}
+	if _, present := got.GenericS3[0].MountedWrite.GetMountView().(*S3MountedWrite_SubPath); !present {
+		t.Fatal("empty write SubPath lost oneof presence during gob round-trip")
 	}
 }
 
@@ -194,47 +219,79 @@ func TestKubernetesSchemaFieldCompatibility(t *testing.T) {
 	if !configDescriptor.ReservedRanges().Has(34) || !configDescriptor.ReservedNames().Has("MountedInputs") {
 		t.Fatal("Config.MountedInputs field 34 must be reserved")
 	}
+
 	storageDescriptor := (&KubernetesStorage{}).ProtoReflect().Descriptor()
-	if storageDescriptor.Fields().ByName("MountedInputs") != nil {
-		t.Fatal("KubernetesStorage.MountedInputs must be removed")
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"WorkspaceVolume":           1,
+		"WorkerContainer":           3,
+		"ExecutorContainer":         4,
+		"volumes":                   6,
+		"volumeMounts":              7,
+		"volumeClaimTemplates":      8,
+		"persistentVolumeTemplates": 9,
+	} {
+		field := storageDescriptor.Fields().ByName(name)
+		if field == nil || field.Number() != number {
+			t.Fatalf("KubernetesStorage.%s field = %v, want %d", name, field, number)
+		}
+		if name == "volumes" || name == "volumeMounts" || name == "volumeClaimTemplates" || name == "persistentVolumeTemplates" {
+			if !field.IsList() || field.Kind() != protoreflect.MessageKind || field.Message().FullName() != "google.protobuf.Struct" {
+				t.Errorf("KubernetesStorage.%s field = %v, want repeated google.protobuf.Struct", name, field)
+			}
+		}
 	}
-	if !storageDescriptor.ReservedRanges().Has(5) || !storageDescriptor.ReservedNames().Has("MountedInputs") {
-		t.Fatal("KubernetesStorage.MountedInputs field 5 must be reserved")
+	for _, number := range []protoreflect.FieldNumber{2, 5} {
+		if !storageDescriptor.ReservedRanges().Has(number) {
+			t.Errorf("KubernetesStorage field number %d is not reserved", number)
+		}
 	}
-	s3MountedRead := (&GenericS3Storage{}).ProtoReflect().Descriptor().Fields().ByName("MountedRead")
-	if s3MountedRead == nil || s3MountedRead.Number() != 9 || s3MountedRead.Kind() != protoreflect.MessageKind {
-		t.Fatalf("GenericS3Storage.MountedRead field = %v, want optional message field 9", s3MountedRead)
+	for _, name := range []protoreflect.Name{"Bindings", "MountedInputs"} {
+		if !storageDescriptor.ReservedNames().Has(name) {
+			t.Errorf("KubernetesStorage field name %q is not reserved", name)
+		}
 	}
-	s3MountedWrite := (&GenericS3Storage{}).ProtoReflect().Descriptor().Fields().ByName("MountedWrite")
-	if s3MountedWrite == nil || s3MountedWrite.Number() != 10 || s3MountedWrite.Kind() != protoreflect.MessageKind {
-		t.Fatalf("GenericS3Storage.MountedWrite field = %v, want optional message field 10", s3MountedWrite)
-	}
+
 	readFields := (&S3MountedRead{}).ProtoReflect().Descriptor().Fields()
-	if field := readFields.ByName("WorkerMount"); field == nil || field.Number() != 1 {
-		t.Fatalf("S3MountedRead.WorkerMount field = %v, want 1", field)
-	}
-	if field := readFields.ByName("Prefix"); field == nil || field.Number() != 2 {
-		t.Fatalf("S3MountedRead.Prefix field = %v, want 2", field)
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"Prefix":  2,
+		"Volume":  3,
+		"SubPath": 4,
+	} {
+		field := readFields.ByName(name)
+		if field == nil || field.Number() != number {
+			t.Fatalf("S3MountedRead.%s field = %v, want %d", name, field, number)
+		}
 	}
 	writeFields := (&S3MountedWrite{}).ProtoReflect().Descriptor().Fields()
 	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
-		"WorkerMount": 1,
-		"Prefix":      2,
-		"Timeout":     3,
+		"Prefix":  2,
+		"Timeout": 3,
+		"Volume":  4,
+		"SubPath": 5,
 	} {
-		if field := writeFields.ByName(name); field == nil || field.Number() != number {
+		field := writeFields.ByName(name)
+		if field == nil || field.Number() != number {
 			t.Fatalf("S3MountedWrite.%s field = %v, want %d", name, field, number)
 		}
 	}
-	if configDescriptor.ParentFile().Messages().ByName("KubernetesMountedInput") != nil {
-		t.Fatal("KubernetesMountedInput message must be removed")
+	for _, message := range []protoreflect.MessageDescriptor{
+		(&S3MountedRead{}).ProtoReflect().Descriptor(),
+		(&S3MountedWrite{}).ProtoReflect().Descriptor(),
+	} {
+		if !message.ReservedRanges().Has(1) || !message.ReservedNames().Has("WorkerMount") {
+			t.Errorf("%s must reserve WorkerMount field 1", message.Name())
+		}
+		subPath := message.Fields().ByName("SubPath")
+		if subPath == nil || subPath.ContainingOneof() == nil || subPath.ContainingOneof().Name() != "MountView" {
+			t.Errorf("%s.SubPath must retain presence in MountView oneof", message.Name())
+		}
 	}
-	bindingDescriptor := (&KubernetesStorageBinding{}).ProtoReflect().Descriptor()
-	if field := bindingDescriptor.Fields().ByName("WorkerMounts"); field == nil || field.Number() != 5 {
-		t.Fatalf("KubernetesStorageBinding.WorkerMounts field = %v, want 5", field)
-	}
-	if !bindingDescriptor.ReservedRanges().Has(4) {
-		t.Fatal("KubernetesStorageBinding field 4 must be reserved")
+
+	fileMessages := configDescriptor.ParentFile().Messages()
+	for _, name := range []protoreflect.Name{"KubernetesStorageBinding", "KubernetesWorkerMount", "KubernetesStorageTemplates", "KubernetesMountedInput"} {
+		if fileMessages.ByName(name) != nil {
+			t.Errorf("removed message %s is still in the schema", name)
+		}
 	}
 }
 
@@ -254,25 +311,58 @@ func TestRemovedKubernetesStorageKeysAreRejected(t *testing.T) {
 	}
 }
 
-func TestOldMountedInputSchemaIsRejected(t *testing.T) {
+func TestOldKubernetesStorageShapesAreRejected(t *testing.T) {
 	for name, raw := range map[string]string{
-		"top-level mounted inputs": `MountedInputs:
-  - URLPrefix: s3://bucket/prefix/
-    Path: /mounted/input
-`,
-		"string worker mount": `Kubernetes:
+		"bindings": `Kubernetes:
   Storage:
     Bindings:
       - Name: data
         ExistingClaim: shared-data
-        WorkerMounts:
-          - mountPath: /data
+`,
+		"S3 worker mount": `GenericS3:
+  - MountedRead:
+      WorkerMount: data
+      Prefix: input/
+`,
+		"S3 write worker mount": `GenericS3:
+  - MountedWrite:
+      WorkerMount: data
+      Prefix: output/
+`,
+		"string volume object": `Kubernetes:
+  Storage:
+    volumes:
+      - "name: data"
+`,
+		"string volume mount object": `Kubernetes:
+  Storage:
+    volumeMounts:
+      - "mountPath: /data"
+`,
+		"string claim template object": `Kubernetes:
+  Storage:
+    volumeClaimTemplates:
+      - "kind: PersistentVolumeClaim"
+`,
+		"string persistent volume template object": `Kubernetes:
+  Storage:
+    persistentVolumeTemplates:
+      - "kind: PersistentVolume"
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := Parse([]byte(raw), EmptyConfig()); err == nil {
-				t.Fatal("old mounted input schema was accepted")
+				t.Fatal("old Kubernetes storage shape was accepted")
 			}
 		})
 	}
+}
+
+func mustStruct(t *testing.T, value map[string]any) *structpb.Struct {
+	t.Helper()
+	message, err := structpb.NewStruct(value)
+	if err != nil {
+		t.Fatal("create protobuf Struct:", err)
+	}
+	return message
 }

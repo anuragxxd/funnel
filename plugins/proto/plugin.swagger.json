@@ -613,7 +613,8 @@
           "type": "array",
           "items": {
             "type": "object"
-          }
+          },
+          "description": "Each template metadata.name defines a logical volume. Funnel creates its\nPVC as \u003ctask ID\u003e-\u003clogical name\u003e and supplies the volume automatically."
         },
         "persistentVolumeTemplates": {
           "type": "array",

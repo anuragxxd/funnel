@@ -26,10 +26,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const boundClaimTemplate = `apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: work-{{.TaskId}}
+const boundClaimTemplate = `metadata:
+  name: workspace
 spec:
   storageClassName: research
   accessModes: [ReadWriteMany]
@@ -38,10 +36,8 @@ spec:
       storage: 1Gi
 `
 
-const boundPairClaimTemplate = `apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: work-{{.TaskId}}
+const boundPairClaimTemplate = `metadata:
+  name: workspace
 spec:
   volumeName: data-{{.TaskId}}
   storageClassName: research
@@ -116,10 +112,7 @@ func createdStorage(t *testing.T, withPV bool) *config.KubernetesStorage {
 		pvTemplates = []*structpb.Struct{nativeResource(t, boundVolumeTemplate)}
 	}
 	return &config.KubernetesStorage{
-		WorkspaceVolume: "workspace",
-		Volumes: []*structpb.Struct{nativeResource(t, `name: workspace
-persistentVolumeClaim:
-  claimName: work-{{.TaskId}}`)},
+		WorkspaceVolume:           "workspace",
 		VolumeClaimTemplates:      []*structpb.Struct{nativeResource(t, claimTemplate)},
 		PersistentVolumeTemplates: pvTemplates,
 	}
@@ -143,8 +136,8 @@ func TestNativeStorageSubmitAndCleanup(t *testing.T) {
 		ownsPV  bool
 	}{
 		{"existing", existingStorage(t, "research-data"), "research-data", false},
-		{"claim", createdStorage(t, false), "work-task-a", false},
-		{"pair", createdStorage(t, true), "work-task-a", true},
+		{"claim", createdStorage(t, false), "task-a-workspace", false},
+		{"pair", createdStorage(t, true), "task-a-workspace", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -168,8 +161,14 @@ func TestNativeStorageSubmitAndCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.Volumes[0].PersistentVolumeClaim.ClaimName != tc.claim || plan.Namespace != "tasks" {
+			if len(plan.Volumes) != 1 || plan.Volumes[0].Name != "workspace" || plan.Volumes[0].PersistentVolumeClaim.ClaimName != tc.claim || plan.Namespace != "tasks" {
 				t.Fatalf("wrong submission snapshot: %+v", plan)
+			}
+			if tc.name != "existing" {
+				claim, err := client.CoreV1().PersistentVolumeClaims("tasks").Get(ctx, tc.claim, metav1.GetOptions{})
+				if err != nil || claim.Name != "task-a-workspace" || claim.Namespace != "tasks" {
+					t.Fatalf("template must create the task-scoped claim: claim=%v error=%v", claim, err)
+				}
 			}
 			if tc.ownsPV {
 				if len(plan.OwnedClaims) != 1 || len(plan.OwnedVolumes) != 1 || plan.OwnedVolumes[0] != "data-task-a" {

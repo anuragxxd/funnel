@@ -97,7 +97,7 @@ A matched file must exist beneath the selected mount root. Funnel rejects traver
 
 The server resolves each backend's selected worker volume mount and records mounted reads and writes in version 4 storage plans. Workers use the plan directly, even when their static ConfigMap differs. The server does not read worker filesystem paths. Existing Jobs with version 4 plans remain compatible. The version 4 decoder cannot run or clean up Jobs with version 1, 2, or 3 plans. Finish those tasks and clean up their Jobs with a compatible older binary before upgrading.
 
-The config schema changed. Replace `MountedRead.WorkerMount` and `MountedWrite.WorkerMount` with `Volume`, and set `SubPath` when one volume has multiple explicit worker mounts. Rebuild Go RPC plugins against the updated config package before exchanging configuration with them. The schema reserves field 1 and the name `WorkerMount` in `MountedRead` and `MountedWrite`. Other compute backends retain their existing storage clients. No TES schema fields change.
+The broader native storage migration changes the config schema. Replace `MountedRead.WorkerMount` and `MountedWrite.WorkerMount` with `Volume`, and set `SubPath` when one volume has multiple explicit worker mounts. Rebuild Go RPC plugins against the updated config package before exchanging configuration with them. The automatic PVC naming change does not alter the plugin schema or require another rebuild. The schema reserves field 1 and the name `WorkerMount` in `MountedRead` and `MountedWrite`. Other compute backends retain their existing storage clients. No TES schema fields change.
 
 ## Output publication
 

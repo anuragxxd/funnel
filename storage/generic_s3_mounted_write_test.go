@@ -99,6 +99,9 @@ func TestMountedWriteTimeoutAndPermissionFailure(t *testing.T) {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			mux, s3, _ := mountedWriterFixture(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) })
 			s3.mountedWrite.timeout = 20 * time.Millisecond
+			if status == http.StatusForbidden {
+				s3.mountedWrite.timeout = 5 * time.Second
+			}
 			obj, err := mux.Put(context.Background(), "s3://bucket/results/file", publicationFile(t, "data"))
 			if err == nil || obj != nil {
 				t.Fatalf("failed export reported success: %+v %v", obj, err)

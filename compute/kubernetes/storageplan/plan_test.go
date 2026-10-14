@@ -98,9 +98,9 @@ func withWriteSubPath(backend *config.GenericS3Storage, subPath string) {
 	backend.MountedWrite.MountView = &config.S3MountedWrite_SubPath{SubPath: subPath}
 }
 
-const pvcTemplate = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: claim-{{.TaskId}}\nspec:\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
+const pvcTemplate = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: workspace\nspec:\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
 
-const pairedPVC = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: claim-{{.TaskId}}\nspec:\n  volumeName: disk-{{.TaskId}}\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
+const pairedPVC = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: workspace\nspec:\n  volumeName: disk-{{.TaskId}}\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  resources:\n    requests:\n      storage: 5Gi\n"
 
 const pvTemplate = "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: disk-{{.TaskId}}\nspec:\n  capacity:\n    storage: 5Gi\n  accessModes: [ReadWriteMany]\n  storageClassName: fast\n  persistentVolumeReclaimPolicy: Retain\n  csi:\n    driver: example.csi\n    volumeHandle: handle-{{.TaskId}}\n    volumeAttributes:\n      bucket: native-bucket\n"
 
@@ -504,7 +504,7 @@ func TestNativeTemplatesPreservedAndExplicitlyLinked(t *testing.T) {
 	for _, pair := range []bool{false, true} {
 		t.Run(map[bool]string{false: "PVC only", true: "PV pair"}[pair], func(t *testing.T) {
 			c := existingConfig()
-			setVolume(c, 0, "workspace", "claim-{{.TaskId}}")
+			c.Kubernetes.Storage.Volumes = nil
 			claimText := pvcTemplate
 			if pair {
 				claimText = pairedPVC
@@ -516,8 +516,11 @@ func TestNativeTemplatesPreservedAndExplicitlyLinked(t *testing.T) {
 				t.Fatal(err)
 			}
 			claim := p.Claims[0]
-			if claim.Name != "claim-task-123" || claim.Namespace != "jobs" || claim.Spec.StorageClassName == nil || *claim.Spec.StorageClassName != "fast" || claim.Spec.Resources.Requests.Storage().String() != "5Gi" || claim.Spec.AccessModes[0] != corev1.ReadWriteMany {
+			if claim.Name != "task-123-workspace" || claim.Namespace != "jobs" || claim.Spec.StorageClassName == nil || *claim.Spec.StorageClassName != "fast" || claim.Spec.Resources.Requests.Storage().String() != "5Gi" || claim.Spec.AccessModes[0] != corev1.ReadWriteMany {
 				t.Fatalf("native PVC fields changed: %+v", claim)
+			}
+			if len(p.Volumes) != 1 || p.Volumes[0].Name != "workspace" || p.Volumes[0].PersistentVolumeClaim.ClaimName != claim.Name {
+				t.Fatalf("PVC template did not create its logical volume: %+v", p.Volumes)
 			}
 			if pair {
 				pv := p.PersistentVolumes[0]
@@ -545,23 +548,65 @@ func TestNativeTemplatesPreservedAndExplicitlyLinked(t *testing.T) {
 	}
 }
 
+func TestClaimTemplateDefaultsAndDeterministicNames(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Volumes = nil
+	raw := strings.Replace(pvcTemplate, "apiVersion: v1\n", "", 1)
+	raw = strings.Replace(raw, "kind: PersistentVolumeClaim\n", "", 1)
+	c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
+
+	first, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Resolve(&tes.Task{Id: "task-123"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Claims[0].APIVersion != "v1" || first.Claims[0].Kind != "PersistentVolumeClaim" {
+		t.Fatalf("omitted PVC type metadata was not defaulted: %+v", first.Claims[0].TypeMeta)
+	}
+	if first.Claims[0].Name != "task-123-workspace" || !reflect.DeepEqual(first.OwnedClaims, second.OwnedClaims) || !reflect.DeepEqual(first.Volumes, second.Volumes) {
+		t.Fatalf("PVC names changed across retries: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestGeneratedClaimNameMustFitDNSSubdomain(t *testing.T) {
+	c := existingConfig()
+	c.Kubernetes.Storage.Volumes = nil
+	c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pvcTemplate)}
+	taskID := strings.Join([]string{
+		strings.Repeat("a", 63),
+		strings.Repeat("b", 63),
+		strings.Repeat("c", 63),
+		strings.Repeat("d", 61),
+	}, ".")
+	if len(taskID) != 253 {
+		t.Fatalf("test task ID length = %d, want 253", len(taskID))
+	}
+	if _, err := Resolve(&tes.Task{Id: taskID}, c); err == nil || !strings.Contains(err.Error(), "generated PVC name") {
+		t.Fatalf("overlong generated PVC name accepted: %v", err)
+	}
+}
+
 func TestSharedPVCAndOperatorPVReferences(t *testing.T) {
-	t.Run("volumes may share managed PVC", func(t *testing.T) {
+	t.Run("logical volume may have multiple mounts", func(t *testing.T) {
 		c := existingConfig()
-		setVolume(c, 0, "workspace", "claim-task-123")
-		addVolume(c, "alias", "claim-task-123")
+		c.Kubernetes.Storage.Volumes = nil
 		c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pvcTemplate)}
+		addMount(c, "workspace", "/workspace-view-a", nil)
+		addMount(c, "workspace", "/workspace-view-b", map[string]interface{}{"readOnly": true})
 		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(p.Claims) != 1 || len(p.OwnedClaims) != 1 || p.Volumes[0].PersistentVolumeClaim.ClaimName != p.Volumes[1].PersistentVolumeClaim.ClaimName {
-			t.Fatalf("shared PVC was duplicated: %+v", p)
+		if len(p.Claims) != 1 || len(p.OwnedClaims) != 1 || len(p.Volumes) != 1 || p.Volumes[0].Name != "workspace" || len(p.WorkerMounts) != 2 || p.WorkerMounts[0].Name != p.Volumes[0].Name || p.Volumes[0].PersistentVolumeClaim.ClaimName != "task-123-workspace" {
+			t.Fatalf("logical PVC volume or mounts changed: %+v", p)
 		}
 	})
 	t.Run("PVC may name operator-managed PV", func(t *testing.T) {
 		c := existingConfig()
-		setVolume(c, 0, "workspace", "claim-task-123")
+		c.Kubernetes.Storage.Volumes = nil
 		claim := strings.Replace(pvcTemplate, "  accessModes:", "  volumeName: operator-disk\n  accessModes:", 1)
 		c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, claim)}
 		p, err := Resolve(&tes.Task{Id: "task-123"}, c)
@@ -596,7 +641,7 @@ func TestStrictNativeDecodingAndScalarRendering(t *testing.T) {
 			s.VolumeMounts = []*structpb.Struct{nativeYAML(t, "name: workspace\nmountPath: /data\nunknownField: true\n")}
 		}},
 		{"unknown PVC field", func(t *testing.T, s *config.KubernetesStorage) {
-			s.Volumes[0] = object(map[string]interface{}{"name": "workspace", "persistentVolumeClaim": map[string]interface{}{"claimName": "claim-task-123"}})
+			s.Volumes = nil
 			s.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "  accessModes:", "  unknownField: true\n  accessModes:", 1))}
 		}},
 	}
@@ -635,45 +680,51 @@ func TestInvalidNativeStorageAndLinks(t *testing.T) {
 			addMount(c, "workspace", "/data", map[string]interface{}{"subPath": "a", "subPathExpr": "b"})
 		}},
 		{"block PVC", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "  accessModes:", "  volumeMode: Block\n  accessModes:", 1))}
 		}},
 		{"RWOP workspace", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "ReadWriteMany", "ReadWriteOncePod", 1))}
 		}},
 		{"read-only workspace PVC", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "ReadWriteMany", "ReadOnlyMany", 1))}
 		}},
 		{"foreign PVC namespace", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			raw := strings.Replace(pvcTemplate, "metadata:\n", "metadata:\n  namespace: foreign\n", 1)
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
 		{"wrong PVC kind", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "PersistentVolumeClaim", "Secret", 1))}
 		}},
 		{"PVC owner reference", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			raw := strings.Replace(pvcTemplate, "metadata:\n", "metadata:\n  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n", 1)
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
-		{"PVC name lacks task ID", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "shared")
-			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvcTemplate, "claim-{{.TaskId}}", "shared", 1))}
+		{"task-templated logical name requires migration", func(t *testing.T, c *config.Config) {
+			c.Kubernetes.Storage.Volumes = nil
+			raw := strings.Replace(pvcTemplate, "name: workspace", "name: claim-{{.TaskId}}", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
-		{"unused PVC template", func(t *testing.T, c *config.Config) {
+		{"explicit volume collides with logical volume", func(t *testing.T, c *config.Config) {
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pvcTemplate)}
 		}},
+		{"explicit volume cannot reference generated claim", func(t *testing.T, c *config.Config) {
+			addVolume(c, "external-ref", "task-123-cache")
+			raw := strings.Replace(pvcTemplate, "name: workspace", "name: cache", 1)
+			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
+		}},
 		{"duplicate PVC template", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			item := nativeYAML(t, pvcTemplate)
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{item, item}
 		}},
 		{"conflicting PVC volumeName", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			raw := strings.Replace(pairedPVC, "disk-{{.TaskId}}", "other", 1)
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
@@ -682,41 +733,40 @@ func TestInvalidNativeStorageAndLinks(t *testing.T) {
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
 		}},
 		{"PV without source", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: disk-{{.TaskId}}\nspec: {}\n")}
 		}},
 		{"multiple PV sources", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate+"  hostPath:\n    path: /tmp/host\n")}
 		}},
 		{"PV owner reference", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			raw := strings.Replace(pvTemplate, "metadata:\n", "metadata:\n  ownerReferences:\n  - apiVersion: batch/v1\n    kind: Job\n    name: foreign\n    uid: foreign\n", 1)
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
 		{"block PV", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvTemplate, "  capacity:", "  volumeMode: Block\n  capacity:", 1))}
 		}},
 		{"foreign claimRef", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			raw := strings.Replace(pvTemplate, "spec:\n", "spec:\n  claimRef:\n    name: foreign\n", 1)
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, raw)}
 		}},
 		{"multiple PVCs point to one PV", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
-			addVolume(c, "cache", "other-task-123")
-			other := strings.Replace(pairedPVC, "claim-{{.TaskId}}", "other-{{.TaskId}}", 1)
+			c.Kubernetes.Storage.Volumes = nil
+			other := strings.Replace(pairedPVC, "name: workspace", "name: cache", 1)
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC), nativeYAML(t, other)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, pvTemplate)}
 		}},
 		{"wrong PV kind", func(t *testing.T, c *config.Config) {
-			setVolume(c, 0, "workspace", "claim-task-123")
+			c.Kubernetes.Storage.Volumes = nil
 			c.Kubernetes.Storage.VolumeClaimTemplates = []*structpb.Struct{nativeYAML(t, pairedPVC)}
 			c.Kubernetes.Storage.PersistentVolumeTemplates = []*structpb.Struct{nativeYAML(t, strings.Replace(pvTemplate, "PersistentVolume", "Secret", 1))}
 		}},

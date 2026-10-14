@@ -426,6 +426,8 @@ message KubernetesStorage {
   string ExecutorContainer = 4;
   repeated google.protobuf.Struct volumes = 6;
   repeated google.protobuf.Struct volumeMounts = 7;
+  // Each template metadata.name defines a logical volume. Funnel creates its
+  // PVC as <task ID>-<logical name> and supplies the volume automatically.
   repeated google.protobuf.Struct volumeClaimTemplates = 8;
   repeated google.protobuf.Struct persistentVolumeTemplates = 9;
 }

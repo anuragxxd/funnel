@@ -31,26 +31,20 @@ Kubernetes:
 
 The claim must exist in `JobsNamespace` and support filesystem access from the worker and executor Pods. Funnel creates a task-specific workspace directory on that claim. `ReadWriteMany` supports placement across nodes. `ReadWriteOnce` requires compatible Pod placement. `ReadWriteOncePod` cannot serve the worker and executor Pods and is rejected.
 
-Every configured volume must use a PVC. For an existing claim, set `persistentVolumeClaim.claimName` to its literal name. For a PVC template, use a Go template in that field that renders to the template's full name. A `volumeMounts` entry refers to a configured volume through its `name` field.
+Use `volumes` entries for existing claims. Set `persistentVolumeClaim.claimName` to the claim's literal name. A PVC template creates a volume with the same logical name as the template. Do not add a matching `volumes` entry. A `volumeMounts` entry refers to either kind of volume through its `name` field.
 
 ## Provision a PVC through a StorageClass
 
-Use `persistentVolumeClaim.claimName` on a configured volume to refer to a PVC template. The value must match the template's full `metadata.name`, including the task ID.
+Each PVC template creates a claim for one task and a volume with the same logical name. Set `WorkspaceVolume` to that name to use the claim for the task workspace.
 
 ```yaml
 Kubernetes:
   JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    volumes:
-      - name: workspace
-        persistentVolumeClaim:
-          claimName: work-{{.TaskId}}
     volumeClaimTemplates:
-      - apiVersion: v1
-        kind: PersistentVolumeClaim
-        metadata:
-          name: work-{{.TaskId}}
+      - metadata:
+          name: workspace
         spec:
           storageClassName: research-rwx
           accessModes:
@@ -60,30 +54,26 @@ Kubernetes:
               storage: "{{.DiskGb}}Gi"
 ```
 
-Funnel creates the claim in `JobsNamespace` and sets the worker Job as its owner. Kubernetes garbage collection removes the claim after the Job. The StorageClass determines provisioning and reclaim behavior. This configuration makes no PV API calls during normal submission or cleanup.
+For a task with ID `task-a`, this template creates the PVC `task-a-workspace` and a volume named `workspace`. Funnel sets the worker Job as the claim's owner. Kubernetes garbage collection removes the claim after the Job. The StorageClass determines provisioning and reclaim behavior. This configuration makes no PV API calls during normal submission or cleanup.
 
-Funnel requires each PVC template to be a `v1` `PersistentVolumeClaim` with an explicit `metadata.name` that includes `TaskId`. It infers an omitted `metadata.namespace` from the effective job namespace, which uses `JobsNamespace` or falls back to `Namespace`. Do not set `generateName`, owner references, or block volume mode. Every template must be referenced by a configured volume. Funnel does not infer a claim name from a volume name or discover a template by matching a partial name.
+Set each PVC template's `metadata.name` to a static logical volume name that is a DNS label, such as `workspace`. Funnel names the PVC `<taskID>-<logicalName>`. Do not put `TaskId` in the PVC template's `metadata.name`. Omit `apiVersion` and `kind` to use `v1` and `PersistentVolumeClaim` defaults. Funnel infers an omitted `metadata.namespace` from the effective job namespace, which uses `JobsNamespace` or falls back to `Namespace`. Do not set `generateName`, owner references, or block volume mode. Each logical name must be unique and must not collide with a `volumes` entry. An existing-claim volume cannot refer to a generated claim name.
 
-Funnel renders Go templates in string values, then decodes each object as a Kubernetes resource. It does not render an entire YAML document as template text. Quote templated quantity values so YAML keeps them as strings. Templates can use `.TaskId`, `.Namespace`, and `.DiskGb`. They can also use `.Bucket`, `.Region`, and `.KmsKeyID` from the first GenericS3 entry when present. Those three values are empty when no GenericS3 entry exists.
+Funnel renders Go templates in string values other than the PVC template's logical `metadata.name`, then decodes each object as a Kubernetes resource. It does not render an entire YAML document as template text. Quote templated quantity values so YAML keeps them as strings. Other fields can use `.TaskId`, `.Namespace`, and `.DiskGb`. They can also use `.Bucket`, `.Region`, and `.KmsKeyID` from the first GenericS3 entry when present. Those three values are empty when no GenericS3 entry exists.
+
+To migrate an existing task-specific PVC template, replace its `metadata.name` such as `work-{{.TaskId}}` with a static name such as `workspace`, then remove the `volumes` entry that points to the rendered claim name. If a PV template specifies `spec.claimRef.name`, remove that reference so Funnel fills the generated name, or change it to `{{.TaskId}}-workspace` for this example. Keep Go templates in other resource fields, including `spec.volumeName` and PV `metadata.name`. Existing version 4 storage plans remain compatible. The new naming rule applies to new task submissions.
 
 ## Create an explicit PV and PVC pair
 
-Set `PVC.spec.volumeName` to the exact `metadata.name` of a `persistentVolumeTemplates` entry. Funnel fills a missing PV `spec.claimRef` with that PVC's name and namespace. If the template provides a conflicting reference, Funnel rejects it before creating resources.
+Set `PVC.spec.volumeName` to the exact `metadata.name` of a `persistentVolumeTemplates` entry. The PVC template keeps its static logical name, while `spec.volumeName` can use `TaskId` to select a task-specific PV. Funnel fills a missing PV `spec.claimRef` with the generated PVC name and namespace. For task `task-a`, the example claim is `task-a-workspace`, and the PV claim reference uses that name. If the template provides a conflicting reference, Funnel rejects it before creating resources.
 
 ```yaml
 Kubernetes:
   JobsNamespace: funnel-tasks
   Storage:
     WorkspaceVolume: workspace
-    volumes:
-      - name: workspace
-        persistentVolumeClaim:
-          claimName: data-{{.TaskId}}
     volumeClaimTemplates:
-      - apiVersion: v1
-        kind: PersistentVolumeClaim
-        metadata:
-          name: data-{{.TaskId}}
+      - metadata:
+          name: workspace
         spec:
           storageClassName: ""
           volumeName: disk-{{.TaskId}}
@@ -163,7 +153,7 @@ Provisioning checks the worker Job before and after each resource creation. If c
 
 Funnel records a version 4 plan in the Job's `funnel.calypr.org/storage-plan` annotation and supplies the same plan through `FUNNEL_KUBERNETES_STORAGE_PLAN`. The plan records resolved volumes, worker mounts, S3 routes, claim names, namespace, and work directory. It contains no credentials. Existing Jobs with version 4 plans remain compatible. Do not set the plan environment variable or annotation in templates.
 
-The config schema changed. Migrate configurations to native objects and rebuild Go RPC plugins against the updated config package before exchanging configuration with them. The schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. It reserves `KubernetesStorage` field 2 and the names `Bindings` and `MountedInputs`. `MountedRead` and `MountedWrite` reserve field 1 and the name `WorkerMount`. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are also reserved. Configuration with retired names fails parsing.
+The broader native storage migration changes the config schema. Migrate configurations to native objects and rebuild Go RPC plugins against the updated config package before exchanging configuration with them. This PVC naming change adds no config fields and requires no plugin rebuild by itself. The schema preserves `Kubernetes.ForbiddenPathPrefixes` at field 20 and uses `WorkerImage` at 24 and `Storage` at 25. It reserves `KubernetesStorage` field 2 and the names `Bindings` and `MountedInputs`. `MountedRead` and `MountedWrite` reserve field 1 and the name `WorkerMount`. Kubernetes field numbers 21–23 and the names `PVCMode`, `StorageClassName`, `SharedPVCName`, and `S3FilesFilesystemId` are also reserved. Configuration with retired names fails parsing.
 
 For configurations from PR #1454, replace `PVCMode: full` with native PV and PVC templates, `PVCMode: pvc` with a PVC template containing `spec.storageClassName`, and `PVCMode: shared` with `persistentVolumeClaim.claimName`. Keep `WorkerImage` as an independent field.
 

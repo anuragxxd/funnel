@@ -104,10 +104,11 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 		Volumes:           volumes,
 		WorkerMounts:      workerMounts,
 	}
-	claims, claimsByName, err := parseClaimTemplates(storageConfig.VolumeClaimTemplates, data, ns, volumes, p.WorkspaceVolume, task.Id)
+	claims, templateVolumes, err := parseClaimTemplates(storageConfig.VolumeClaimTemplates, data, ns, volumes, p.WorkspaceVolume, task.Id)
 	if err != nil {
 		return nil, err
 	}
+	p.Volumes = append(p.Volumes, templateVolumes...)
 	p.Claims = claims
 	for _, claim := range claims {
 		p.OwnedClaims = append(p.OwnedClaims, claim.Name)
@@ -120,7 +121,7 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	for _, volume := range pvs {
 		p.OwnedVolumes = append(p.OwnedVolumes, volume.Name)
 	}
-	if err := linkResources(p, claimsByName, pvsByName); err != nil {
+	if err := linkResources(p, pvsByName); err != nil {
 		return nil, err
 	}
 	if err := p.validate(); err != nil {
@@ -176,20 +177,44 @@ func resolveWorkerMounts(rawMounts []*structpb.Struct, data map[string]interface
 	return workerMounts, mountsByVolume, nil
 }
 
-func parseClaimTemplates(rawClaims []*structpb.Struct, data map[string]interface{}, namespace string, volumes []corev1.Volume, workspaceVolume, taskID string) ([]*corev1.PersistentVolumeClaim, map[string]*corev1.PersistentVolumeClaim, error) {
+func parseClaimTemplates(rawClaims []*structpb.Struct, data map[string]interface{}, namespace string, volumes []corev1.Volume, workspaceVolume, taskID string) ([]*corev1.PersistentVolumeClaim, []corev1.Volume, error) {
 	claims := make([]*corev1.PersistentVolumeClaim, 0, len(rawClaims))
-	byName := make(map[string]*corev1.PersistentVolumeClaim, len(rawClaims))
-	workspaceClaim := ""
+	templateVolumes := make([]corev1.Volume, 0, len(rawClaims))
+	explicitVolumes := make(map[string]bool, len(volumes))
+	externalClaims := make(map[string]bool, len(volumes))
+	logicalNames := make(map[string]bool, len(rawClaims))
 	for _, volume := range volumes {
-		if volume.Name == workspaceVolume {
-			workspaceClaim = volume.PersistentVolumeClaim.ClaimName
-			break
-		}
+		explicitVolumes[volume.Name] = true
+		externalClaims[volume.PersistentVolumeClaim.ClaimName] = true
 	}
 	for i, raw := range rawClaims {
+		if raw == nil {
+			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeClaimTemplates[%d]: native object must not be null", i)
+		}
+		metadata, ok := raw.AsMap()["metadata"].(map[string]interface{})
+		if !ok {
+			return nil, nil, fmt.Errorf("PVC template %d requires metadata.name as a static DNS1123 label", i)
+		}
+		logicalName, ok := metadata["name"].(string)
+		if !ok || strings.Contains(logicalName, "{{") || strings.Contains(logicalName, "}}") || len(validation.IsDNS1123Label(logicalName)) != 0 {
+			return nil, nil, fmt.Errorf("PVC template %d metadata.name must be a static DNS1123 label; remove task templating because claim names are generated from the task ID", i)
+		}
+		if logicalNames[logicalName] {
+			return nil, nil, fmt.Errorf("duplicate PVC template logical name %q", logicalName)
+		}
+		logicalNames[logicalName] = true
+		if explicitVolumes[logicalName] {
+			return nil, nil, fmt.Errorf("PVC template logical name %q collides with an explicit storage volume", logicalName)
+		}
 		claim := &corev1.PersistentVolumeClaim{}
 		if err := decodeStruct(raw, data, claim); err != nil {
 			return nil, nil, fmt.Errorf("Kubernetes.Storage.VolumeClaimTemplates[%d]: %w", i, err)
+		}
+		if claim.APIVersion == "" {
+			claim.APIVersion = "v1"
+		}
+		if claim.Kind == "" {
+			claim.Kind = "PersistentVolumeClaim"
 		}
 		if claim.APIVersion != "v1" || claim.Kind != "PersistentVolumeClaim" {
 			return nil, nil, fmt.Errorf("PVC template %d must be a v1 PersistentVolumeClaim", i)
@@ -198,21 +223,28 @@ func parseClaimTemplates(rawClaims []*structpb.Struct, data map[string]interface
 			claim.Namespace = namespace
 		}
 		if claim.Namespace != namespace {
-			return nil, nil, fmt.Errorf("PVC %q namespace must be %q", claim.Name, namespace)
+			return nil, nil, fmt.Errorf("PVC template %q namespace must be %q", logicalName, namespace)
 		}
 		if len(claim.OwnerReferences) != 0 {
-			return nil, nil, fmt.Errorf("PVC %q must not contain owner references", claim.Name)
+			return nil, nil, fmt.Errorf("PVC template %q must not contain owner references", logicalName)
 		}
 		if claim.Spec.VolumeMode != nil && *claim.Spec.VolumeMode == corev1.PersistentVolumeBlock {
-			return nil, nil, fmt.Errorf("PVC %q must use filesystem volume mode", claim.Name)
+			return nil, nil, fmt.Errorf("PVC template %q must use filesystem volume mode", logicalName)
 		}
-		if claim.GenerateName != "" || !validName(claim.Name) || !strings.Contains(claim.Name, taskID) {
-			return nil, nil, fmt.Errorf("PVC template %d requires an explicit task-specific name", i)
+		if claim.GenerateName != "" {
+			return nil, nil, fmt.Errorf("PVC template %q must not contain generateName", logicalName)
+		}
+		claim.Name = taskID + "-" + logicalName
+		if !validName(claim.Name) {
+			return nil, nil, fmt.Errorf("generated PVC name %q is invalid or exceeds the Kubernetes DNS subdomain limit", claim.Name)
+		}
+		if externalClaims[claim.Name] {
+			return nil, nil, fmt.Errorf("explicit storage volume references generated task-owned PVC %q; use logical volume name %q", claim.Name, logicalName)
 		}
 		if claim.Spec.VolumeName != "" && !validName(claim.Spec.VolumeName) {
-			return nil, nil, fmt.Errorf("PVC %q has invalid volumeName %q", claim.Name, claim.Spec.VolumeName)
+			return nil, nil, fmt.Errorf("PVC template %q has invalid volumeName %q", logicalName, claim.Spec.VolumeName)
 		}
-		if claim.Name == workspaceClaim && len(claim.Spec.AccessModes) > 0 {
+		if logicalName == workspaceVolume && len(claim.Spec.AccessModes) > 0 {
 			writable := false
 			for _, mode := range claim.Spec.AccessModes {
 				if mode == corev1.ReadWriteOncePod {
@@ -226,13 +258,15 @@ func parseClaimTemplates(rawClaims []*structpb.Struct, data map[string]interface
 				return nil, nil, fmt.Errorf("workspace PVC must support writable access from worker and executor Pods")
 			}
 		}
-		if _, exists := byName[claim.Name]; exists {
-			return nil, nil, fmt.Errorf("duplicate PVC template name %q", claim.Name)
-		}
-		byName[claim.Name] = claim
 		claims = append(claims, claim)
+		templateVolumes = append(templateVolumes, corev1.Volume{
+			Name: logicalName,
+			VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: claim.Name,
+			}},
+		})
 	}
-	return claims, byName, nil
+	return claims, templateVolumes, nil
 }
 
 func parsePersistentVolumeTemplates(rawVolumes []*structpb.Struct, data map[string]interface{}, taskID string) ([]*corev1.PersistentVolume, map[string]*corev1.PersistentVolume, error) {
@@ -279,19 +313,7 @@ func persistentVolumeSourceCount(source corev1.PersistentVolumeSource) int {
 	return count
 }
 
-func linkResources(plan *Plan, claims map[string]*corev1.PersistentVolumeClaim, volumes map[string]*corev1.PersistentVolume) error {
-	claimUse := make(map[string]int, len(claims))
-	for _, volume := range plan.Volumes {
-		name := volume.PersistentVolumeClaim.ClaimName
-		if _, managed := claims[name]; managed {
-			claimUse[name]++
-		}
-	}
-	for name := range claims {
-		if claimUse[name] == 0 {
-			return fmt.Errorf("PVC template %q is not referenced by a storage volume", name)
-		}
-	}
+func linkResources(plan *Plan, volumes map[string]*corev1.PersistentVolume) error {
 	linkedPVClaims := make(map[string]string, len(volumes))
 	for _, claim := range plan.Claims {
 		pv, managedPV := volumes[claim.Spec.VolumeName]

@@ -71,10 +71,7 @@ func TestNativeStorageLive(t *testing.T) {
 			conf.Kubernetes.WorkerTemplate = liveStorageWorkerTemplate
 			claimTemplate := liveStorageClaimTemplate
 			storageConfig := &config.KubernetesStorage{
-				WorkspaceVolume: "workspace",
-				Volumes: []*structpb.Struct{nativeResource(t, `name: workspace
-persistentVolumeClaim:
-  claimName: work-{{.TaskId}}`)},
+				WorkspaceVolume:      "workspace",
 				VolumeClaimTemplates: []*structpb.Struct{nativeResource(t, claimTemplate)},
 			}
 			if tc.pair {
@@ -92,9 +89,9 @@ persistentVolumeClaim:
 				if err != nil {
 					t.Fatal(err)
 				}
-				storageConfig.Volumes[0] = nativeResource(t, `name: workspace
+				storageConfig.Volumes = []*structpb.Struct{nativeResource(t, `name: workspace
 persistentVolumeClaim:
-  claimName: operator-workspace`)
+  claimName: operator-workspace`)}
 				storageConfig.VolumeClaimTemplates = nil
 			}
 			conf.Kubernetes.Storage = storageConfig
@@ -112,6 +109,13 @@ persistentVolumeClaim:
 				t.Fatalf("reading persisted plan: %v", err)
 			}
 			claimName := plan.Volumes[0].PersistentVolumeClaim.ClaimName
+			wantClaimName := task.Id + "-workspace"
+			if tc.external {
+				wantClaimName = "operator-workspace"
+			}
+			if claimName != wantClaimName {
+				t.Fatalf("unexpected workspace claim name: got %q, want %q", claimName, wantClaimName)
+			}
 			if tc.external && (len(plan.OwnedClaims) != 0 || len(plan.OwnedVolumes) != 0) {
 				t.Fatal("operator claim became task-owned")
 			}
@@ -146,6 +150,9 @@ persistentVolumeClaim:
 				pv, err := client.CoreV1().PersistentVolumes().Get(ctx, plan.OwnedVolumes[0], metav1.GetOptions{})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != claimName || pv.Spec.ClaimRef.Namespace != ns {
+					t.Fatalf("PV claim reference must use the generated claim name: %+v", pv.Spec.ClaimRef)
 				}
 				if !slices.Contains(pv.Finalizers, "kubernetes.io/pv-protection") {
 					t.Fatal("bound PV lacks native protection finalizer")
@@ -211,10 +218,8 @@ spec:
           exit 1
 `
 
-const liveStorageClaimTemplate = `apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: work-{{.TaskId}}
+const liveStorageClaimTemplate = `metadata:
+  name: workspace
   namespace: {{.Namespace}}
 spec:
   accessModes: [ReadWriteOnce]

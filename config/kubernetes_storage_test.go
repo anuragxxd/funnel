@@ -22,9 +22,9 @@ Kubernetes:
     WorkerContainer: funnel-worker
     ExecutorContainer: funnel-executor
     volumes:
-      - name: task-data
+      - name: workspace
         persistentVolumeClaim:
-          claimName: claim-{{.TaskId}}
+          claimName: shared-workspace
     volumeMounts:
       - name: task-data
         mountPath: /data
@@ -33,7 +33,7 @@ Kubernetes:
       - apiVersion: v1
         kind: PersistentVolumeClaim
         metadata:
-          name: claim-{{.TaskId}}
+          name: task-data
         spec:
           volumeName: pv-{{.TaskId}}
     persistentVolumeTemplates:
@@ -63,8 +63,8 @@ GenericS3:
 	}
 
 	volume := mustStruct(t, map[string]any{
-		"name":                  "task-data",
-		"persistentVolumeClaim": map[string]any{"claimName": "claim-{{.TaskId}}"},
+		"name":                  "workspace",
+		"persistentVolumeClaim": map[string]any{"claimName": "shared-workspace"},
 	})
 	volumeMount := mustStruct(t, map[string]any{
 		"name":      "task-data",
@@ -74,7 +74,7 @@ GenericS3:
 	claimTemplate := mustStruct(t, map[string]any{
 		"apiVersion": "v1",
 		"kind":       "PersistentVolumeClaim",
-		"metadata":   map[string]any{"name": "claim-{{.TaskId}}"},
+		"metadata":   map[string]any{"name": "task-data"},
 		"spec":       map[string]any{"volumeName": "pv-{{.TaskId}}"},
 	})
 	pvTemplate := mustStruct(t, map[string]any{

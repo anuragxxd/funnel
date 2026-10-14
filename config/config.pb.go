@@ -3179,9 +3179,11 @@ type KubernetesStorage struct {
 	// ExecutorContainer selects the executor container receiving generated
 	// mounts. It may be empty when the pod has one regular
 	// container; set it when the pod has multiple regular containers.
-	ExecutorContainer         string             `protobuf:"bytes,4,opt,name=ExecutorContainer,proto3" json:"ExecutorContainer,omitempty"`
-	Volumes                   []*structpb.Struct `protobuf:"bytes,6,rep,name=volumes,proto3" json:"volumes,omitempty"`
-	VolumeMounts              []*structpb.Struct `protobuf:"bytes,7,rep,name=volumeMounts,proto3" json:"volumeMounts,omitempty"`
+	ExecutorContainer string             `protobuf:"bytes,4,opt,name=ExecutorContainer,proto3" json:"ExecutorContainer,omitempty"`
+	Volumes           []*structpb.Struct `protobuf:"bytes,6,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	VolumeMounts      []*structpb.Struct `protobuf:"bytes,7,rep,name=volumeMounts,proto3" json:"volumeMounts,omitempty"`
+	// Each template metadata.name defines a logical volume. Funnel creates its
+	// PVC as <task ID>-<logical name> and supplies the volume automatically.
 	VolumeClaimTemplates      []*structpb.Struct `protobuf:"bytes,8,rep,name=volumeClaimTemplates,proto3" json:"volumeClaimTemplates,omitempty"`
 	PersistentVolumeTemplates []*structpb.Struct `protobuf:"bytes,9,rep,name=persistentVolumeTemplates,proto3" json:"persistentVolumeTemplates,omitempty"`
 	unknownFields             protoimpl.UnknownFields

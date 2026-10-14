@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
  
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       # -----------------
       # 1. Cluster Setup
       # -----------------
@@ -77,18 +80,10 @@ jobs:
 
       - name: Install Minio
         run: |
-          helm repo add minio https://charts.min.io/
-          helm repo update
-          helm upgrade --install minio minio/minio \
-            --set resources.requests.memory=512Mi \
-            --set replicas=1 \
-            --set persistence.enabled=false \
-            --set mode=standalone \
-            --set rootUser=example \
-            --set rootPassword=example-password \
-            --set buckets[0].name=local \
-            --set buckets[0].policy=none \
-            --set buckets[0].purge=false
+          helm upgrade --install minio oci://registry-1.docker.io/bitnamicharts/minio \
+            --version 17.0.21 \
+            --values tests/kubernetes/minio-values.yaml \
+            --wait --timeout=5m
 
       - name: Install AWS S3 CSI Driver (for testing S3 mounts in Funnel)
         run: |
@@ -149,6 +144,8 @@ jobs:
           
       # Ref: https://github.com/nextflow-io/nf-ga4gh/blob/main/.github/workflows/build.yml
       - name: Install + configure nf-canary
+        env:
+          PLUGIN_VERSION: '1.5.0'
         run: |
           git clone https://github.com/seqeralabs/nf-canary
 
@@ -228,3 +225,11 @@ jobs:
             nf-canary/report.html
             nf-canary/.nextflow.log
           if-no-files-found: ignore
+
+      - name: Diagnose Kubernetes failures
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl describe pods
+          kubectl get events -A --sort-by='.lastTimestamp'
+          kubectl logs -l app.kubernetes.io/instance=minio --all-containers --tail=100

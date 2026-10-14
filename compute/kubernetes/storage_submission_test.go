@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ohsu-comp-bio/funnel/compute/kubernetes/storageplan"
 	"github.com/ohsu-comp-bio/funnel/config"
@@ -126,6 +128,30 @@ func bindingClient() *fake.Clientset {
 		return false, nil, nil
 	})
 	return client
+}
+
+func retainFinalizedJobsOnDelete(client *fake.Clientset, namespace string, onDelete func(string)) {
+	client.PrependReactor("delete", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		name := action.(k8stesting.DeleteAction).GetName()
+		if onDelete != nil {
+			onDelete(name)
+		}
+		object, err := client.Tracker().Get(batchv1.SchemeGroupVersion.WithResource("jobs"), namespace, name)
+		if err != nil {
+			return false, nil, nil
+		}
+		job := object.(*batchv1.Job).DeepCopy()
+		if len(job.Finalizers) == 0 {
+			return false, nil, nil
+		}
+		if job.DeletionTimestamp == nil {
+			job.DeletionTimestamp = &metav1.Time{Time: time.Unix(1, 0)}
+			if err := client.Tracker().Update(batchv1.SchemeGroupVersion.WithResource("jobs"), job, namespace); err != nil {
+				return true, nil, err
+			}
+		}
+		return true, nil, nil
+	})
 }
 
 func TestNativeStorageSubmitAndCleanup(t *testing.T) {
@@ -262,6 +288,7 @@ func TestStorageSubmissionPreservesCreationAndRollbackErrors(t *testing.T) {
 	client.PrependReactor("delete", "persistentvolumes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, rollbackErr
 	})
+	retainFinalizedJobsOnDelete(client, "tasks", nil)
 	conf := bindingConfig(t, createdStorage(t, true))
 	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 	err := backend.Submit(ctx, &tes.Task{Id: "rollback-failure"}, conf)
@@ -372,34 +399,105 @@ readOnly: true`)}
 }
 
 func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
-	ctx := context.Background()
-	client := bindingClient()
-	conf := bindingConfig(t, createdStorage(t, true))
-	backend := &Backend{client: client, conf: conf, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
-	if err := backend.Submit(ctx, &tes.Task{Id: "retry"}, conf); err != nil {
-		t.Fatal(err)
-	}
-	fail := true
-	client.PrependReactor("delete", "persistentvolumes", func(k8stesting.Action) (bool, runtime.Object, error) {
-		if fail {
-			fail = false
-			return true, nil, errors.New("temporarily unavailable")
-		}
-		return false, nil, nil
-	})
-	if err := backend.Cancel(ctx, "retry"); err == nil {
-		t.Fatal("expected transient deletion failure")
-	}
-	job, err := client.BatchV1().Jobs("tasks").Get(ctx, "retry", metav1.GetOptions{})
-	if err != nil || job.Annotations[storageplan.Annotation] == "" || len(job.Finalizers) == 0 {
-		t.Fatalf("failed cleanup lost its ownership snapshot: %v %v", job, err)
-	}
-	backend.conf = bindingConfig(t, existingStorage(t, "different-default"))
-	if err := backend.Cancel(ctx, "retry"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.CoreV1().PersistentVolumes().Get(ctx, "data-retry", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("retry left owned PV: %v", err)
+	for _, tc := range []struct {
+		name   string
+		active int32
+	}{
+		{name: "pending"},
+		{name: "active", active: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			client := bindingClient()
+			conf := bindingConfig(t, createdStorage(t, true))
+			taskID := "retry-" + tc.name
+			database := &mockReadOnlyServer{tasks: []*tes.Task{{Id: taskID, State: tes.State_CANCELED}}}
+			backend := &Backend{client: client, conf: conf, database: database, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
+			if err := backend.Submit(ctx, &tes.Task{Id: taskID}, conf); err != nil {
+				t.Fatal(err)
+			}
+			job, err := client.BatchV1().Jobs("tasks").Get(ctx, taskID, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job.Status.Active = tc.active
+			if _, err := client.BatchV1().Jobs("tasks").UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			executorName := taskID + "-0"
+			if _, err := client.BatchV1().Jobs("tasks").Create(ctx, &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: executorName, Namespace: "tasks", Labels: map[string]string{"app": "funnel-executor"}},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			pvFailure := errors.New("temporarily unavailable")
+			var workerDeleteRequests, executorDeleteRequests, pvDeleteRequests int
+			retainFinalizedJobsOnDelete(client, "tasks", func(name string) {
+				switch name {
+				case taskID:
+					workerDeleteRequests++
+				case executorName:
+					executorDeleteRequests++
+				}
+			})
+			client.PrependReactor("update", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				updated := action.(k8stesting.UpdateAction).GetObject().(*batchv1.Job)
+				if updated.Name != taskID || updated.DeletionTimestamp == nil {
+					return false, nil, nil
+				}
+				for _, finalizer := range updated.Finalizers {
+					if finalizer == storageplan.Finalizer {
+						return false, nil, nil
+					}
+				}
+				if err := client.Tracker().Delete(batchv1.SchemeGroupVersion.WithResource("jobs"), "tasks", taskID); err != nil {
+					return true, nil, err
+				}
+				return true, nil, nil
+			})
+			client.PrependReactor("delete", "persistentvolumes", func(k8stesting.Action) (bool, runtime.Object, error) {
+				pvDeleteRequests++
+				if pvDeleteRequests == 1 {
+					return true, nil, pvFailure
+				}
+				return false, nil, nil
+			})
+			client.ClearActions()
+
+			if err := backend.Cancel(ctx, taskID); !errors.Is(err, pvFailure) {
+				t.Fatalf("Cancel error = %v, want transient PV deletion failure", err)
+			}
+			if workerDeleteRequests != 1 || executorDeleteRequests != 1 {
+				t.Fatalf("first Cancel requested worker deletes %d times and executor deletes %d times", workerDeleteRequests, executorDeleteRequests)
+			}
+			job, err = client.BatchV1().Jobs("tasks").Get(ctx, taskID, metav1.GetOptions{})
+			if err != nil || job.DeletionTimestamp == nil || job.Annotations[storageplan.Annotation] == "" {
+				t.Fatalf("failed cleanup must retain the deleting Job snapshot: job=%v error=%v", job, err)
+			}
+			if !slices.Contains(job.Finalizers, storageplan.Finalizer) {
+				t.Fatalf("failed cleanup released its storage finalizer: %v", job.Finalizers)
+			}
+			if _, err := client.CoreV1().PersistentVolumes().Get(ctx, "data-"+taskID, metav1.GetOptions{}); err != nil {
+				t.Fatalf("failed PV delete unexpectedly removed the owned PV: %v", err)
+			}
+			backend.conf = bindingConfig(t, existingStorage(t, "different-default"))
+
+			backend.reconcileOnce(ctx, false)
+
+			if _, err := client.BatchV1().Jobs("tasks").Get(ctx, taskID, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("ordinary reconciliation did not finish worker cleanup: %v", err)
+			}
+			if _, err := client.CoreV1().PersistentVolumes().Get(ctx, "data-"+taskID, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("ordinary reconciliation did not retry owned PV deletion: %v", err)
+			}
+			if _, err := client.BatchV1().Jobs("tasks").Get(ctx, executorName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("first Cancel did not remove executor Job: %v", err)
+			}
+			if pvDeleteRequests != 2 {
+				t.Fatalf("got %d PV delete requests, want initial failure and reconcile retry", pvDeleteRequests)
+			}
+		})
 	}
 }
 

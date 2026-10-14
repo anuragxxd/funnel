@@ -214,7 +214,20 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 		}
 	}
 
-	logger.Debug("Creating Kubernetes clientset", "clientset", kcmd.Clientset)
+	containers := job.Spec.Template.Spec.Containers
+	if len(containers) == 0 {
+		return &K8sSystemErr{
+			Reason:  "JobCreationFailed",
+			Message: "Executor job requires a regular container",
+			Err:     fmt.Errorf("executor job has no regular containers"),
+		}
+	}
+	executorContainerName := containers[0].Name
+	if kcmd.StoragePlan != nil && kcmd.StoragePlan.ExecutorContainer != "" {
+		executorContainerName = kcmd.StoragePlan.ExecutorContainer
+	}
+
+	logger.Debug("Creating Kubernetes clientset")
 	clientset := kcmd.Clientset
 	if clientset == nil {
 		logger.Debug("No Kubernetes clientset provided, creating in-cluster clientset")
@@ -260,7 +273,7 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 	logger.Debug("Job created successfully, waiting for pod to finish", "jobName", job.Name)
 	executorJobName := fmt.Sprintf("%s-%d", taskId, kcmd.JobId)
 	podLabelSelector := fmt.Sprintf("job-name=%s", executorJobName)
-	pod, err := waitForPodFinish(ctx, clientset, kcmd.JobsNamespace, podLabelSelector)
+	pod, err := waitForPodFinish(ctx, clientset, kcmd.JobsNamespace, podLabelSelector, executorContainerName)
 	if err != nil {
 		var sysErr *K8sSystemErr
 		if errors.As(err, &sysErr) && slices.Contains(terminalWaitingReasons, sysErr.Reason) {
@@ -282,7 +295,7 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 	}
 
 	logger.Debug("Streaming pod logs", "podName", pod.Name)
-	err = streamPodLogs(ctx, kcmd.JobsNamespace, pod.Name, kcmd.Stdout, kcmd.Stderr)
+	err = streamPodLogs(ctx, clientset, kcmd.JobsNamespace, pod.Name, executorContainerName, kcmd.Stdout, kcmd.Stderr)
 	if err != nil {
 		return &K8sSystemErr{
 			Reason:  "LogStreamingFailed",
@@ -299,8 +312,14 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 		}
 	}
 
-	// TODO: Review effects (e.g. does this cover all Executors?)
-	cStatus := pod.Status.ContainerStatuses[0]
+	cStatus := findContainerStatus(pod, executorContainerName)
+	if cStatus == nil {
+		return &K8sSystemErr{
+			Reason:  "ExecutorContainerStatusMissing",
+			Message: fmt.Sprintf("executor job %s: status for container %q not found", job.Name, executorContainerName),
+			Err:     fmt.Errorf("executor container status not found"),
+		}
+	}
 	if cStatus.State.Terminated == nil {
 		return &K8sSystemErr{
 			Reason:  "ContainerNotTerminated",
@@ -334,17 +353,13 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 
 // streamPodLogs streams logs from a pod regardless of its state
 // This works for Running, Succeeded, and Failed pods (as long as they haven't been deleted)
-func streamPodLogs(ctx context.Context, namespace string, podName string, stdout io.Writer, stderr io.Writer) error {
-	clientset, err := getKubernetesClientset()
-	if err != nil {
-		return fmt.Errorf("getting kubernetes clientset: %v", err)
-	}
-
+func streamPodLogs(ctx context.Context, clientset kubernetes.Interface, namespace, podName, containerName string, stdout io.Writer, stderr io.Writer) error {
 	// Get logs from any pod state - Kubernetes API supports fetching logs from terminated pods
 	// Follow=true ensures we stream logs until the pod completely finishes (closes the stream),
 	// catching the final error logs that might be missed due to race conditions.
 	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
-		Follow: true,
+		Container: containerName,
+		Follow:    true,
 	})
 
 	podLogs, err := req.Stream(ctx)
@@ -413,7 +428,7 @@ var terminalWaitingReasons = []string{
 // resuming from the last observed resourceVersion. Failing to distinguish
 // this case from a genuinely missing pod previously caused long-running tasks
 // to be marked SYSTEM_ERROR ("received nil pod object from watcher").
-func waitForPodFinish(ctx context.Context, clientset kubernetes.Interface, namespace, labelSelector string) (*corev1.Pod, error) {
+func waitForPodFinish(ctx context.Context, clientset kubernetes.Interface, namespace, labelSelector, containerName string) (*corev1.Pod, error) {
 	// wait up to 5 min for the pod to appear
 	appearanceTimer := time.NewTimer(5 * 60 * time.Second)
 	defer appearanceTimer.Stop()
@@ -491,12 +506,12 @@ func waitForPodFinish(ctx context.Context, clientset kubernetes.Interface, names
 			podPhase := pod.Status.Phase
 			logger.Debug("Pod status:", "podPhase", podPhase)
 
-			allStatuses := append(pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses...)
+			executorStatus := findContainerStatus(pod, containerName)
+			allStatuses := slices.Clone(pod.Status.InitContainerStatuses)
+			if executorStatus != nil {
+				allStatuses = append(allStatuses, *executorStatus)
+			}
 			for _, cs := range allStatuses {
-				if cs.State.Terminated != nil {
-					logger.Debug("Container has terminated")
-					return pod, nil
-				}
 				// A container stuck in a terminal waiting state will never start;
 				// fail immediately rather than waiting for the job's backoff limit.
 				if w := cs.State.Waiting; w != nil && slices.Contains(terminalWaitingReasons, w.Reason) {
@@ -509,6 +524,18 @@ func waitForPodFinish(ctx context.Context, clientset kubernetes.Interface, names
 						Message: fmt.Sprintf("executor pod has a terminal container waiting error: %s", msg),
 					}
 				}
+			}
+			for _, cs := range pod.Status.InitContainerStatuses {
+				if terminated := cs.State.Terminated; terminated != nil && terminated.ExitCode != 0 {
+					return nil, &K8sSystemErr{
+						Reason:  "InitContainerFailed",
+						Message: fmt.Sprintf("init container %q exited with code %d", cs.Name, terminated.ExitCode),
+					}
+				}
+			}
+			if executorStatus != nil && executorStatus.State.Terminated != nil {
+				logger.Debug("Executor container has terminated", "container", containerName)
+				return pod, nil
 			}
 
 			// Handle pod deletion
@@ -525,6 +552,15 @@ func waitForPodFinish(ctx context.Context, clientset kubernetes.Interface, names
 			return nil, fmt.Errorf("context cancelled while waiting for pod termination")
 		}
 	}
+}
+
+func findContainerStatus(pod *corev1.Pod, containerName string) *corev1.ContainerStatus {
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == containerName {
+			return &pod.Status.ContainerStatuses[i]
+		}
+	}
+	return nil
 }
 
 // newPodWatcher establishes a watch on pods matching labelSelector. When

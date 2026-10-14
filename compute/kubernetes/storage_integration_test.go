@@ -220,7 +220,7 @@ spec:
 
 const liveStorageClaimTemplate = `metadata:
   name: workspace
-  namespace: {{.Namespace}}
+  namespace: "{{.Namespace}}"
 spec:
   accessModes: [ReadWriteOnce]
   storageClassName: standard

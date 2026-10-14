@@ -52,7 +52,7 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 		// Keep the Job snapshot until every PV delete request is acknowledged.
 		// Kubernetes' PV protection then waits for dependent PVCs to disappear.
 		if err := b.deleteBoundVolumes(ctx, taskId, plan.Namespace, plan.OwnedVolumes, ownerUID); err != nil {
-			return err
+			errs = multierror.Append(errs, err)
 		}
 	}
 
@@ -62,7 +62,7 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 	if err != nil {
 		errs = multierror.Append(errs, err)
 		b.log.Error("deleting Job", "error", err)
-	} else if plan != nil && len(plan.OwnedVolumes) > 0 {
+	} else if errs == nil && plan != nil && len(plan.OwnedVolumes) > 0 {
 		if err := b.releaseStorageFinalizer(ctx, taskId, plan.Namespace, ownerUID); err != nil {
 			return err
 		}

@@ -29,7 +29,8 @@ func FlattenInputs(ctx context.Context, inputs []*tes.Input, store storage.Stora
 			flat = append(flat, input)
 
 		case tes.Directory:
-			list, err := store.List(ctx, input.Url)
+			prefix := strings.TrimSuffix(input.Url, "/") + "/"
+			list, err := store.List(ctx, prefix)
 			if err != nil {
 				return nil, fmt.Errorf("listing directory: %s", err)
 			}
@@ -40,7 +41,6 @@ func FlattenInputs(ctx context.Context, inputs []*tes.Input, store storage.Stora
 			}
 
 			for _, obj := range list {
-				prefix := strings.TrimSuffix(input.Url, "/") + "/"
 				rel, ok := strings.CutPrefix(obj.URL, prefix)
 				if !ok || !filepath.IsLocal(rel) || rel == "." || strings.ContainsAny(rel, "\\\x00") {
 					return nil, fmt.Errorf("listed input %q is outside directory %q", obj.URL, input.Url)

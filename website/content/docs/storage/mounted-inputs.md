@@ -57,7 +57,7 @@ The two reference mounts use one PVC at different paths. `MountedRead.SubPath: g
 
 `Prefix` is relative to the bucket. An empty prefix selects the whole bucket. The selected mount's authored `mountPath` is the route root. For example, `s3://analysis-data/genomes/genome.fa` maps to `/mnt/reference/genome.fa`. Funnel does not append the selected subpath or prefix to `mountPath`. The storage driver and operator must make the mounted view correspond to the configured bucket prefix and provide the required freshness.
 
-`MountedWrite` uses the same volume, subpath, and prefix rules. Its selected mount must be writable, and the underlying PVC must permit writes. Funnel appends an output key path relative to the configured prefix when it copies a TES output file into the mount.
+`MountedWrite` uses the same volume, subpath, and prefix rules. Its selected mount must be writable, and the underlying PVC must permit writes. Before creating task resources, Funnel checks both existing claims and PVC templates for `ReadWriteOnce`, `ReadWriteMany`, or `ReadWriteOncePod` access. A claim with only `ReadOnlyMany` cannot serve mounted outputs. The workspace still cannot use `ReadWriteOncePod` because worker and executor Pods share it. Funnel appends an output key path relative to the configured prefix when it copies a TES output file into the mount.
 
 For native storage configuration details, including existing claims, StorageClass-provisioned claims, and explicit PV/PVC pairs, see [Kubernetes storage](../../compute/kubernetes-storage/).
 

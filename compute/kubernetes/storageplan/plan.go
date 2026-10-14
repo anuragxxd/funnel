@@ -127,7 +127,42 @@ func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
+	for _, claim := range p.Claims {
+		if err := p.ValidateMountedWriteClaim(claim); err != nil {
+			return nil, err
+		}
+	}
 	return p, nil
+}
+
+// ValidateMountedWriteClaim checks output access for a template or existing PVC
+// against a resolved plan. Read-only input claims do not require write access.
+func (p *Plan) ValidateMountedWriteClaim(claim *corev1.PersistentVolumeClaim) error {
+	if len(p.S3WriteMounts) == 0 {
+		return nil
+	}
+	for _, mode := range claim.Spec.AccessModes {
+		switch mode {
+		case corev1.ReadWriteOnce, corev1.ReadWriteMany, corev1.ReadWriteOncePod:
+			return nil
+		}
+	}
+	writeRoots := make(map[string]bool, len(p.S3WriteMounts))
+	for _, mount := range p.S3WriteMounts {
+		writeRoots[mount.Root] = true
+	}
+	writeVolumes := make(map[string]bool)
+	for _, mount := range p.WorkerMounts {
+		if writeRoots[mount.MountPath] {
+			writeVolumes[mount.Name] = true
+		}
+	}
+	for _, volume := range p.Volumes {
+		if writeVolumes[volume.Name] && volume.PersistentVolumeClaim.ClaimName == claim.Name {
+			return fmt.Errorf("S3 mounted write volume %q claim %s/%s must support a writable access mode: ReadWriteOnce, ReadWriteMany, or ReadWriteOncePod", volume.Name, claim.Namespace, claim.Name)
+		}
+	}
+	return nil
 }
 
 func parseVolumes(rawVolumes []*structpb.Struct, data map[string]interface{}) ([]corev1.Volume, error) {

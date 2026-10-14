@@ -151,7 +151,7 @@ jobs:
 
           cd nf-canary
 
-          cat <<EOF > nextflow.config
+          cat <<EOF > funnel.config
           // Nextflow config file for running on TES Backend
           plugins {
             id 'nf-ga4gh@${PLUGIN_VERSION}'
@@ -162,32 +162,9 @@ jobs:
               container = 'ubuntu:24.04'
           }
           params {
-              // TES
-              endpoint                   = 'http://localhost:8000'
-              basicUsername              = null
-              basicPassword              = null
-
-              // Run all non-Fusion tests
-              run                        = 'all'
-              remoteFile                 = ''
-
-              // Disable Fusion — not applicable for basic TES/Funnel
-              skip                          = ''
-              gpu                           = false
-              run                           = ''
-              outdir                        = null
-              remoteFile                    = null
-              container                     = "quay.io/biocontainers/ubuntu:24.04"
-              fusion                        = false
-              fusion_kernel_version_min     = null
-              fusion_memory_capacity_gb_min = null
-              fusion_disk_capacity_gb_min   = null
-              fusion_nvme_required          = null
-              fusion_vcpus_min              = null
-              fusion_open_files_min         = null
-              fusion_cache_path             = '/tmp'
-              fusion_read_write_buckets     = ""
-              fusion_read_only_buckets      = ""
+              container = 'ubuntu:24.04'
+              fusion = false
+              gpu = false
           }
           aws {
               accessKey = "example"
@@ -207,9 +184,9 @@ jobs:
           NXF_TES_ENDPOINT: http://localhost:8000
           NXF_ANSI_LOG: false
         run: |
+          set -o pipefail
           cd nf-canary
-          nextflow run main.nf -with-report report.html -w s3://local/work 2>&1 | tee nextflow.log
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          nextflow -c funnel.config run main.nf -with-report report.html -w s3://local/work 2>&1 | tee nextflow.log
       
       # ------------------------------
       # 5. Upload test logs + reports

@@ -145,6 +145,16 @@ func (s3 *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 		return nil, err
 	}
 
+	base := url
+	if u.path != "" {
+		if !strings.HasSuffix(base, u.path) {
+			return nil, fmt.Errorf("genericS3: listing URL %q does not end with parsed path %q", url, u.path)
+		}
+		base = strings.TrimSuffix(base, u.path)
+	} else if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+
 	// Recursively list all objects.
 	var objects []*Object
 	recursive := true
@@ -152,12 +162,14 @@ func (s3 *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 		if info.Err != nil {
 			return nil, fmt.Errorf("genericS3: listing %s: %w", url, info.Err)
 		}
-		// check if key represents a directory
+		if !strings.HasPrefix(info.Key, u.path) {
+			continue
+		}
 		if strings.HasSuffix(info.Key, "/") {
 			continue
 		}
 		objects = append(objects, &Object{
-			URL:          "s3://" + u.bucket + "/" + info.Key,
+			URL:          base + info.Key,
 			Name:         info.Key,
 			ETag:         info.ETag,
 			LastModified: info.LastModified,
@@ -221,7 +233,6 @@ func (s3 *GenericS3) Get(ctx context.Context, url, path string) (*Object, error)
 	return obj, nil
 }
 
-// download streams an object to a file without using os.Rename
 func download(ctx context.Context, client *minio.Client, bucket, objectPath, filePath, kmskeyId string) error {
 	opts := minio.GetObjectOptions{}
 	if kmskeyId != "" {
@@ -242,28 +253,16 @@ func download(ctx context.Context, client *minio.Client, bucket, objectPath, fil
 	}
 	defer obj.Close()
 
-	// Step 2: Create the local file (overwrite if exists)
-	logger.Debug("genericS3: creating local file", "filePath", filePath)
-	dir := filepath.Dir(filePath)
-	err = os.MkdirAll(dir, 0755)
+	logger.Debug("genericS3: staging local file", "filePath", filePath)
+	err = writeFileAtomically(ctx, filePath, func(outFile *os.File) error {
+		logger.Debug("genericS3: io.Copy", "outFile", outFile.Name(), "obj", obj)
+		if _, err := io.Copy(outFile, obj); err != nil {
+			return fmt.Errorf("failed writing file: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("failed creating directories: %w", err)
-	}
-
-	outFile, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("failed creating file: %w", err)
-	}
-
-	// Step 3: Copy the contents
-	logger.Debug("genericS3: io.Copy", "outFile", outFile.Name(), "obj", obj)
-	if _, err := io.Copy(outFile, obj); err != nil {
-		outFile.Close()
-		return fmt.Errorf("failed writing file: %w", err)
-	}
-
-	if err := outFile.Close(); err != nil {
-		return fmt.Errorf("failed closing file: %w", err)
+		return fmt.Errorf("failed writing local file: %w", err)
 	}
 
 	if _, err := waitForLocalFile(ctx, filePath); err != nil {

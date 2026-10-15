@@ -104,6 +104,12 @@ func NewWorkerMux(conf *config.Config, mounts []S3ReadMount, writes ...S3WriteMo
 	if err := ValidateS3WriteMounts(writes); err != nil {
 		return nil, err
 	}
+	if len(mounts)+len(writes) > 0 && !mountedFileOperationsSupported {
+		return nil, fmt.Errorf("mounted S3 file access requires Unix nonblocking file opens")
+	}
+	if err := validateS3WriteMountRootAliases(writes); err != nil {
+		return nil, err
+	}
 	mux, err := NewMux(conf)
 	if err != nil {
 		return nil, err

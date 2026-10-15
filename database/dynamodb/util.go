@@ -332,8 +332,9 @@ func (db *DynamoDB) taskKey(id string) map[string]*dynamodb.AttributeValue {
 
 func (db *DynamoDB) getMinimalView(ctx context.Context, id string) (*dynamodb.GetItemOutput, error) {
 	item := &dynamodb.GetItemInput{
-		TableName: aws.String(db.taskTable),
-		Key:       db.taskKey(id),
+		TableName:      aws.String(db.taskTable),
+		Key:            db.taskKey(id),
+		ConsistentRead: aws.Bool(true),
 		ExpressionAttributeNames: map[string]*string{
 			"#owner": aws.String("owner"),
 			"#state": aws.String("state"),

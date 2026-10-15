@@ -37,7 +37,47 @@ func ValidateS3WriteMounts(mounts []S3WriteMount) error {
 		}
 		roots = append(roots, S3ReadMount{Endpoint: mount.Endpoint, Bucket: mount.Bucket, Prefix: mount.Prefix, Root: mount.Root})
 	}
-	return ValidateS3ReadMounts(roots)
+	if err := ValidateS3ReadMounts(roots); err != nil {
+		return err
+	}
+	for i, mount := range mounts {
+		for _, other := range mounts[:i] {
+			if pathOverlaps(mount.Root, other.Root) {
+				return fmt.Errorf("mounted S3 write roots %q and %q overlap", other.Root, mount.Root)
+			}
+		}
+	}
+	return nil
+}
+
+func validateS3WriteMountRootAliases(mounts []S3WriteMount) error {
+	for i, mount := range mounts {
+		for _, other := range mounts[:i] {
+			resolvedMount, mountErr := filepath.EvalSymlinks(mount.Root)
+			resolvedOther, otherErr := filepath.EvalSymlinks(other.Root)
+			if mountErr == nil && otherErr == nil && pathOverlaps(resolvedMount, resolvedOther) {
+				return fmt.Errorf("mounted S3 write roots %q and %q resolve to overlapping directories", other.Root, mount.Root)
+			}
+			mountInfo, mountErr := os.Stat(mount.Root)
+			otherInfo, otherErr := os.Stat(other.Root)
+			if mountErr == nil && otherErr == nil && os.SameFile(mountInfo, otherInfo) {
+				return fmt.Errorf("mounted S3 write roots %q and %q refer to the same directory", other.Root, mount.Root)
+			}
+		}
+	}
+	return nil
+}
+
+func pathOverlaps(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	return a == b || strings.HasPrefix(a, pathPrefix(b)) || strings.HasPrefix(b, pathPrefix(a))
+}
+
+func pathPrefix(value string) string {
+	if value == string(filepath.Separator) {
+		return value
+	}
+	return value + string(filepath.Separator)
 }
 
 func (s3 *GenericS3) mountedWriteURL(raw string) (string, bool) {
@@ -110,63 +150,49 @@ func (s3 *GenericS3) publishMountedFile(ctx context.Context, root *os.Root, dest
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sourceInfo, err := os.Stat(sourcePath)
+	source, err := openRegularFile(sourcePath)
 	if err != nil {
-		return nil, err
-	}
-	if !sourceInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("mounted output source %q is not a regular file", sourcePath)
-	}
-	source, err := os.Open(sourcePath)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open mounted output source %q: %w", sourcePath, err)
 	}
 	defer source.Close()
 	info, err := source.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("mounted output source %q is not a regular file", sourcePath)
-	}
 	if err := root.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 		return nil, err
 	}
-	existing, err := root.Stat(destination)
+	existing, err := root.Lstat(destination)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	if existing != nil && !existing.Mode().IsRegular() {
 		return nil, fmt.Errorf("mounted output destination is not a regular file")
 	}
-	// Open without truncating: the task may already have written the destination file.
-	target, err := root.OpenFile(destination, os.O_WRONLY|os.O_CREATE, 0600)
+	if existing != nil && existing.Mode().IsRegular() && os.SameFile(info, existing) {
+		return s3.waitForMountedOutput(ctx, raw, info.Size())
+	}
+	var copied int64
+	err = writeRootFileAtomicallyWithMode(ctx, root, destination, 0600, func(target *os.File) error {
+		var copyErr error
+		copied, copyErr = io.Copy(target, inputReader{ctx: ctx, source: source})
+		if copyErr != nil {
+			return copyErr
+		}
+		if copied != info.Size() {
+			return fmt.Errorf("mounted output source size changed during copy")
+		}
+		current, err := source.Stat()
+		if err != nil {
+			return err
+		}
+		if current.Size() != info.Size() {
+			return fmt.Errorf("mounted output source size changed during copy")
+		}
+		return ctx.Err()
+	})
 	if err != nil {
-		return nil, err
-	}
-	targetInfo, err := target.Stat()
-	if err != nil {
-		target.Close()
-		return nil, err
-	}
-	if !targetInfo.Mode().IsRegular() {
-		target.Close()
-		return nil, fmt.Errorf("mounted output destination is not a regular file")
-	}
-	if !os.SameFile(info, targetInfo) {
-		if err := target.Truncate(0); err != nil {
-			target.Close()
-			return nil, err
-		}
-		size, copyErr := io.Copy(target, inputReader{ctx: ctx, source: source})
-		if err := errors.Join(copyErr, target.Close(), ctx.Err()); err != nil {
-			return nil, fmt.Errorf("copy mounted output: %w", err)
-		}
-		if size != info.Size() {
-			return nil, fmt.Errorf("mounted output source size changed during copy")
-		}
-	} else if err := target.Close(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy mounted output: %w", err)
 	}
 	return s3.waitForMountedOutput(ctx, raw, info.Size())
 }

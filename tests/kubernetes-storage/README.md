@@ -5,9 +5,18 @@ kubectl and Python 3. The script creates and deletes its own cluster.
 Set `FUNNEL_E2E_OUTPUT_DIR` to retain task JSON, server logs, and cluster
 resources at a known path. It uses a separate kubeconfig.
 
-The `Kubernetes storage E2E` workflow runs the same script on pull requests.
-It builds the checked-out Funnel source into a container and imports that
-image into k3d. It does not deploy a published Funnel chart or image.
+The `Go Tests` workflow runs `go test -race ./...` on pushes.
+The `Kubernetes storage E2E` workflow runs on pull requests targeting `develop`
+and pushes to `develop`. It runs this script.
+
+The script runs `TestNativeStorageLive` against its disposable cluster before
+the TES end-to-end test. It builds the checked-out Funnel source into a
+container and imports that image into k3d. It does not deploy a published
+Funnel chart or image.
+
+The native test uses a nondefault `standard` StorageClass backed by k3d's
+`rancher.io/local-path` provisioner. The script still checks that `local-path`
+remains the default class.
 
 ## Design precedent
 
@@ -50,7 +59,8 @@ is local to the executor Pod, not a substitute for the shared workspace.
 - Both existing and templated `ReadOnlyMany` output claims fail before a
   worker Job or workspace PVC is created.
 
-This suite tests filesystem mounts and API-backed artifact transfers. It
-does not emulate asynchronous mounted S3 publication, certify a CSI driver,
-or replace the Gen3 deployment integration test. Explicit PV provisioning
-also has a separate opt-in test in `compute/kubernetes/storage_integration_test.go`.
+The native test covers dynamic claims, operator-managed claims, explicit PV
+and PVC pairs, and recovery when the persisted ownership annotation is lost.
+This suite tests filesystem mounts and API-backed artifact transfers. It does
+not emulate asynchronous mounted S3 publication, certify a CSI driver, or
+replace the Gen3 deployment integration test.

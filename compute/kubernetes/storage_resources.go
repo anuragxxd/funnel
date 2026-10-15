@@ -187,6 +187,13 @@ func (b *Backend) validateStorageOwner(ctx context.Context, namespace string, ow
 	if job.UID != owner.UID || job.DeletionTimestamp != nil {
 		return fmt.Errorf("worker Job %s/%s was replaced or is deleting while creating storage", namespace, owner.Name)
 	}
+	canceled, err := b.taskCanceled(ctx, owner.Name)
+	if err != nil {
+		return fmt.Errorf("checking task state while creating storage: %w", err)
+	}
+	if canceled {
+		return fmt.Errorf("task %q was canceled while creating storage", owner.Name)
+	}
 	return nil
 }
 

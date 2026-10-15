@@ -20,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -40,9 +41,9 @@ func TestNativeStorageLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name           string
-		external, pair bool
-	}{{name: "dynamicPVC"}, {name: "existingClaim", external: true}, {name: "explicitPV", pair: true}} {
+		name                             string
+		external, pair, removeAnnotation bool
+	}{{name: "dynamicPVC"}, {name: "existingClaim", external: true}, {name: "explicitPV", pair: true}, {name: "explicitPVWithoutAnnotation", pair: true, removeAnnotation: true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
@@ -156,6 +157,16 @@ persistentVolumeClaim:
 				}
 				if !slices.Contains(pv.Finalizers, "kubernetes.io/pv-protection") {
 					t.Fatal("bound PV lacks native protection finalizer")
+				}
+			}
+			if tc.removeAnnotation {
+				patch := []byte(`{"metadata":{"annotations":{"` + storageplan.Annotation + `":null}}}`)
+				if _, err := client.BatchV1().Jobs(ns).Patch(ctx, task.Id, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+					t.Fatalf("removing storage annotation: %v", err)
+				}
+				recovered, ownerUID, err := backend.readTaskStorage(ctx, task.Id)
+				if err != nil || recovered == nil || ownerUID != worker.UID || len(recovered.OwnedVolumes) != 1 || recovered.OwnedVolumes[0] != plan.OwnedVolumes[0] {
+					t.Fatalf("recovering storage plan from worker environment: plan=%+v owner=%q error=%v", recovered, ownerUID, err)
 				}
 			}
 			if err := backend.Cancel(ctx, task.Id); err != nil {

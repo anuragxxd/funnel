@@ -101,7 +101,11 @@ The broader native storage migration changes the config schema. Replace `Mounted
 
 ## Output publication
 
-For an output URL that matches a configured `MountedWrite` endpoint, bucket, and prefix, the worker copies each output file into the selected mount. It then calls S3 `HeadObject` until the object exists with the same size as the local file. The worker checks zero-byte files too.
+For an output URL that matches a configured `MountedWrite` endpoint, bucket, and prefix, the worker copies each output file to a private temporary file beside its destination. After closing the file, it renames the temporary file over the destination. Concurrent transfers publish complete files instead of copying into the same inode. If the source already is the mounted destination, Funnel skips the copy. It then calls S3 `HeadObject` until the object exists with the same size as the local file. The worker checks zero-byte files too.
+
+Mounted file transfers require Unix. The filesystem must support exclusive temporary-file creation, POSIX file permissions, and atomic replacement through same-directory rename, including across worker Pods. A failed rename fails the transfer. Funnel does not retry through an in-place copy or an API upload. Separate write routes must use nonoverlapping filesystem views. Funnel rejects overlapping roots and overlapping views of the same PVC that it can identify from the storage plan.
+
+After a failed or canceled copy, Funnel attempts to remove its temporary file and reports cleanup errors. A process crash can leave temporary files, and a storage driver can export temporary names to the bucket before Funnel removes them. Account for these files in the deployment's storage cleanup policy. Filesystem replacement does not make the driver's later S3 synchronization atomic. See [S3 Files synchronization](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-files-synchronization.html) for that driver's rename and export behavior.
 
 This check proves that S3 reports an object with the expected size. It does not compare file contents, checksums, or object versions. A same-sized object left by an earlier task can satisfy the check. Set `MountedWrite.Timeout` to bound polling. The example's `2700s` timeout is 45 minutes. The default is three hours, and the worker polls every two seconds. An explicit timeout must be positive. Task cancellation also stops the wait.
 

@@ -158,6 +158,45 @@ func TestGenericS3MountedReadsRejectEscapes(t *testing.T) {
 	}
 }
 
+func TestGenericS3MountedReadReplacesDestinationAliases(t *testing.T) {
+	s, _, root := mountedFixture(t)
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, []byte("must remain"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	linkDestination := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(secret, linkDestination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(context.Background(), "s3://bucket/reference/nested/a b.txt", linkDestination); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(secret)
+	if err != nil || string(got) != "must remain" {
+		t.Fatalf("mounted read followed a destination symlink: %q, %v", got, err)
+	}
+
+	aliasDestination := filepath.Join(t.TempDir(), "hardlink")
+	alias := filepath.Join(outside, "alias")
+	if err := os.WriteFile(alias, []byte("preserve alias"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(alias, aliasDestination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(context.Background(), "s3://bucket/reference/nested/a b.txt", aliasDestination); err != nil {
+		t.Fatal(err)
+	}
+	got, err = os.ReadFile(alias)
+	if err != nil || string(got) != "preserve alias" {
+		t.Fatalf("mounted read changed a destination hardlink: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "nested", "a b.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMountedReadValidationDoesNotRestrictAPIOutputs(t *testing.T) {
 	s, fallback, root := mountedFixture(t)
 	u := "s3://bucket/reference/%2e%2e/result"

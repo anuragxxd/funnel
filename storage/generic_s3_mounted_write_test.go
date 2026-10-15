@@ -194,3 +194,36 @@ func TestMountedWriteUnmatchedOutputUsesAPI(t *testing.T) {
 		t.Fatalf("unmatched output changed mount: %v %v", files, err)
 	}
 }
+
+func TestValidateS3WriteMountsRejectsOverlappingRoots(t *testing.T) {
+	root := t.TempDir()
+	for _, mounts := range [][]S3WriteMount{
+		{
+			{Endpoint: "http://s3-one", Bucket: "one", Prefix: "out/", Root: root, Timeout: time.Second},
+			{Endpoint: "http://s3-two", Bucket: "two", Prefix: "out/", Root: root, Timeout: time.Second},
+		},
+		{
+			{Endpoint: "http://s3-one", Bucket: "one", Prefix: "out/", Root: root, Timeout: time.Second},
+			{Endpoint: "http://s3-two", Bucket: "two", Prefix: "out/", Root: filepath.Join(root, "nested"), Timeout: time.Second},
+		},
+	} {
+		if err := ValidateS3WriteMounts(mounts); err == nil {
+			t.Fatalf("overlapping write roots accepted: %+v", mounts)
+		}
+	}
+
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	aliased := []S3WriteMount{
+		{Endpoint: "http://s3-one", Bucket: "one", Prefix: "out/", Root: root, Timeout: time.Second},
+		{Endpoint: "http://s3-two", Bucket: "two", Prefix: "out/", Root: alias, Timeout: time.Second},
+	}
+	if err := ValidateS3WriteMounts(aliased); err != nil {
+		t.Fatalf("server-side route validation inspected aliased worker paths: %v", err)
+	}
+	if err := validateS3WriteMountRootAliases(aliased); err == nil {
+		t.Fatal("worker startup accepted symlink aliases for write roots")
+	}
+}

@@ -134,24 +134,54 @@ func (b *Backend) Close() {
 
 // Submit creates both the PVC and the worker job with better error handling
 func (b *Backend) Submit(ctx context.Context, task *tes.Task, config *config.Config) error {
-	err := b.createResources(ctx, task, config)
-
+	canceled, err := b.taskCanceled(ctx, task.Id)
 	if err != nil {
-		b.log.Error("Error creating resources, writing SystemError event", "error", err, "task ID", task.Id)
-		_ = b.event.WriteEvent(ctx, events.NewState(task.Id, tes.SystemError))
-		_ = b.event.WriteEvent(
-			context.Background(),
-			events.NewSystemLog(
-				task.Id, 0, 0, "error",
-				"Kubernetes job in FAILED state",
-				map[string]string{"error": err.Error()},
-			),
-		)
+		return fmt.Errorf("checking task state before Kubernetes submission: %w", err)
+	}
+	if canceled {
+		b.log.Debug("skipping Kubernetes submission for canceled task", "taskID", task.Id)
+		return nil
+	}
 
-		return fmt.Errorf("creating Worker resources: %w", err)
+	createErr := b.createResources(ctx, task, config)
+	canceled, stateErr := b.taskCanceled(ctx, task.Id)
+	if stateErr != nil {
+		if createErr == nil {
+			b.log.Error("deferring task reconciliation because its state is unavailable after submission", "taskID", task.Id, "error", stateErr)
+			return nil
+		}
+		return errors.Join(fmt.Errorf("creating Worker resources: %w", createErr), fmt.Errorf("checking task state after Kubernetes submission: %w", stateErr))
+	}
+	if canceled {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if cleanupErr := b.cleanResources(cleanupCtx, task.Id); cleanupErr != nil {
+			b.log.Error("cleaning up resources after task cancellation during submission", "taskID", task.Id, "error", cleanupErr)
+		}
+		return nil
+	}
+
+	if createErr != nil {
+		b.log.Error("Error creating resources, writing SystemError event", "error", createErr, "task ID", task.Id)
+		b.writeSystemError(ctx, task.Id, map[string]string{"error": createErr.Error()}, "Kubernetes job in FAILED state")
+		return fmt.Errorf("creating Worker resources: %w", createErr)
 	}
 
 	return nil
+}
+
+func (b *Backend) taskCanceled(ctx context.Context, taskID string) (bool, error) {
+	if b.database == nil {
+		return false, nil
+	}
+	task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskID, View: tes.View_MINIMAL.String()})
+	if err != nil {
+		return false, fmt.Errorf("reading task %q: %w", taskID, err)
+	}
+	if task == nil {
+		return false, fmt.Errorf("reading task %q: database returned no task", taskID)
+	}
+	return task.State == tes.State_CANCELED, nil
 }
 
 // Cancel removes tasks that are pending kubernetes v1/batch jobs.
@@ -590,11 +620,13 @@ func (b *Backend) cleanBacklog(ctx context.Context, disableCleanup bool) {
 		// Orphaned jobs (Active) whose task no longer exists in the Funnel DB — left over from a previous deployment or server crash.
 		if s.Active > 0 {
 			_, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskID, View: tes.View_MINIMAL.String()})
-			if err != nil {
+			if isTaskNotFoundError(err) {
 				b.log.Info("backlog cleanup: deleting orphaned active job with no matching task", "taskID", taskID)
 				if err := b.cleanResources(ctx, taskID); err != nil {
 					b.log.Error("backlog cleanup: failed to clean orphaned resources", "taskID", taskID, "error", err)
 				}
+			} else if err != nil {
+				b.log.Error("backlog cleanup: checking task state", "taskID", taskID, "error", err)
 			}
 		}
 	}
@@ -616,6 +648,17 @@ func (b *Backend) cleanResourcesIfEnabled(ctx context.Context, jobName string, d
 func (b *Backend) writeSystemError(ctx context.Context, jobName string, errAttributes map[string]string, additionalMessage string) {
 	if additionalMessage == "" {
 		additionalMessage = "Kubernetes job in FAILED state"
+	}
+	if b.database != nil {
+		task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: jobName, View: tes.View_MINIMAL.String()})
+		if err != nil {
+			b.log.Error("reconcile: cannot confirm task state before writing SYSTEM_ERROR", "taskID", jobName, "error", err)
+			return
+		}
+		if task == nil || task.State == tes.State_CANCELED {
+			b.log.Debug("skipping SYSTEM_ERROR for canceled or missing task", "taskID", jobName)
+			return
+		}
 	}
 
 	b.event.WriteEvent(ctx, events.NewState(jobName, tes.SystemError))
@@ -774,6 +817,23 @@ func (b *Backend) reconcileOnce(ctx context.Context, disableCleanup bool) {
 			b.reconcileJob(ctx, job, disableCleanup)
 			continue
 		}
+		if b.database != nil {
+			task, taskErr := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskID, View: tes.View_MINIMAL.String()})
+			if taskErr == nil && task != nil && task.State == tes.State_CANCELED {
+				if err := b.cleanResources(ctx, taskID); err != nil {
+					b.log.Error("reconcile: retrying canceled task cleanup", "taskID", taskID, "error", err)
+				}
+				continue
+			}
+			if taskErr == nil && task == nil {
+				b.log.Error("reconcile: database returned no task for unmatched Job", "taskID", taskID)
+				continue
+			}
+			if taskErr != nil && !isTaskNotFoundError(taskErr) {
+				b.log.Error("reconcile: checking task state for unmatched Job", "taskID", taskID, "error", taskErr)
+				continue
+			}
+		}
 		b.log.Debug("reconcile: Task is either orphaned or in a terminal state", "taskID", taskID)
 		if !b.isJobDone(job.Status) {
 			b.log.Debug("reconcile: K8s hasn't given up yet — still within backoffLimit, retrying.", "taskID", taskID, "failed", job.Status.Failed, "backoffLimit", *job.Spec.BackoffLimit)
@@ -824,7 +884,13 @@ func extractTaskIDFromExecutorJobName(name string) string {
 func (b *Backend) isResourceCleanupNeeded(ctx context.Context, taskID string) (bool, error) {
 	task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskID, View: tes.View_MINIMAL.String()})
 	if err != nil {
-		return true, nil
+		if isTaskNotFoundError(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("checking task state for cleanup: %w", err)
+	}
+	if task == nil {
+		return false, fmt.Errorf("checking task state for cleanup: database returned no task")
 	}
 	switch task.State {
 	case tes.State_COMPLETE, tes.State_EXECUTOR_ERROR, tes.State_SYSTEM_ERROR, tes.State_CANCELED:

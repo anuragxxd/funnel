@@ -411,7 +411,7 @@ func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 			client := bindingClient()
 			conf := bindingConfig(t, createdStorage(t, true))
 			taskID := "retry-" + tc.name
-			database := &mockReadOnlyServer{tasks: []*tes.Task{{Id: taskID, State: tes.State_CANCELED}}}
+			database := &mockReadOnlyServer{tasks: []*tes.Task{{Id: taskID, State: tes.State_QUEUED}}}
 			backend := &Backend{client: client, conf: conf, database: database, event: &noopEventWriter{}, log: logger.NewLogger("test", logger.DefaultConfig())}
 			if err := backend.Submit(ctx, &tes.Task{Id: taskID}, conf); err != nil {
 				t.Fatal(err)
@@ -420,6 +420,9 @@ func TestStorageCleanupRetriesAfterPVDeleteFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			database.mu.Lock()
+			database.tasks[0].State = tes.State_CANCELED
+			database.mu.Unlock()
 			job.Status.Active = tc.active
 			if _, err := client.BatchV1().Jobs("tasks").UpdateStatus(ctx, job, metav1.UpdateOptions{}); err != nil {
 				t.Fatal(err)

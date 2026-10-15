@@ -193,41 +193,48 @@ func (s *mountedS3Reader) Get(ctx context.Context, raw, destination string) (*Ob
 		return nil, fmt.Errorf("open mounted input root: %w", err)
 	}
 	defer root.Close() // Read-only directory handle.
-	info, err := root.Stat(rel)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("mounted input %q is not a regular file", raw)
-	}
-	source, err := root.Open(rel)
+	source, err := openRootRegularFile(root, rel)
 	if err != nil {
 		return nil, fmt.Errorf("open mounted input: %w", err)
 	}
-	defer source.Close() // Read-only source; destination Close is checked below.
-	info, err = source.Stat()
+	defer source.Close()
+	info, err := source.Stat()
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("mounted input %q is not a regular file", raw)
-	}
-	targetInfo, err := os.Stat(destination)
+	targetInfo, err := os.Lstat(destination)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if targetInfo != nil && os.SameFile(info, targetInfo) {
+	if targetInfo != nil && targetInfo.Mode().IsRegular() && os.SameFile(info, targetInfo) {
 		return nil, errors.New("mounted input source and destination must differ")
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 		return nil, err
 	}
-	target, err := os.Create(destination)
+	destinationRoot, err := os.OpenRoot(filepath.Dir(destination))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open mounted input destination directory: %w", err)
 	}
-	_, copyErr := io.Copy(target, inputReader{ctx: ctx, source: source})
-	if err := errors.Join(copyErr, target.Close(), ctx.Err()); err != nil {
+	defer destinationRoot.Close()
+	err = writeRootFileAtomically(ctx, destinationRoot, filepath.Base(destination), func(target *os.File) error {
+		size, err := io.Copy(target, inputReader{ctx: ctx, source: source})
+		if err != nil {
+			return err
+		}
+		if size != info.Size() {
+			return fmt.Errorf("mounted input source size changed during copy")
+		}
+		current, err := source.Stat()
+		if err != nil {
+			return err
+		}
+		if current.Size() != info.Size() {
+			return fmt.Errorf("mounted input source size changed during copy")
+		}
+		return ctx.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("copy mounted input: %w", err)
 	}
 	return mountedObject(raw, info), nil

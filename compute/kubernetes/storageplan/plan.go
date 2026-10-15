@@ -47,6 +47,14 @@ type Plan struct {
 	PersistentVolumes []*corev1.PersistentVolume      `json:"-"`
 }
 
+// Ownership contains only the validated identity and resource names needed by cleanup.
+type Ownership struct {
+	TaskID          string
+	Namespace       string
+	WorkerContainer string
+	OwnedVolumes    []string
+}
+
 // Resolve returns nil when Kubernetes storage and all S3 mounted routes are absent.
 func Resolve(task *tes.Task, conf *config.Config) (*Plan, error) {
 	if conf == nil {
@@ -589,6 +597,38 @@ func (p *Plan) Encode() (string, error) {
 }
 
 func Decode(snapshot string) (*Plan, error) {
+	p, err := decodeSnapshot(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.validate(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// DecodeOwnership validates the storage identity used by cleanup while excluding
+// S3 routes, which describe execution behavior and do not affect resource ownership.
+func DecodeOwnership(snapshot string) (*Ownership, error) {
+	p, err := decodeSnapshot(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	ownershipPlan := *p
+	ownershipPlan.S3ReadMounts = nil
+	ownershipPlan.S3WriteMounts = nil
+	if err := ownershipPlan.validate(); err != nil {
+		return nil, err
+	}
+	return &Ownership{
+		TaskID:          p.TaskID,
+		Namespace:       p.Namespace,
+		WorkerContainer: p.WorkerContainer,
+		OwnedVolumes:    append([]string(nil), p.OwnedVolumes...),
+	}, nil
+}
+
+func decodeSnapshot(snapshot string) (*Plan, error) {
 	var header struct{ Version int }
 	if err := json.Unmarshal([]byte(snapshot), &header); err != nil {
 		return nil, fmt.Errorf("decode storage plan version: %w", err)
@@ -601,9 +641,6 @@ func Decode(snapshot string) (*Plan, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {
 		return nil, fmt.Errorf("decode storage plan: %w", err)
-	}
-	if err := p.validate(); err != nil {
-		return nil, err
 	}
 	return &p, nil
 }
@@ -706,6 +743,9 @@ func (p *Plan) validate() error {
 		if !writableMountRoots[writeMount.Root] {
 			return fmt.Errorf("S3 mounted write root %q must match an explicit writable worker mount", writeMount.Root)
 		}
+	}
+	if err := validateMountedWriteRoutes(p.S3WriteMounts, p.WorkerMounts, volumes); err != nil {
+		return err
 	}
 	return nil
 }

@@ -29,6 +29,8 @@ jobs:
 
   unitTest:
     runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
     permissions:
       checks: write
     steps:
@@ -47,7 +49,7 @@ jobs:
       id: unit_tests
       continue-on-error: true
       run: |
-        gotestsum --junitfile=test-report.xml -- ./... -coverprofile=coverage.out
+        gotestsum --junitfile=test-report.xml -- -race ./... -coverprofile=coverage.out
         go tool cover -func=coverage.out
 
     - name: Test Report

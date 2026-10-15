@@ -430,6 +430,49 @@ func TestS3MountedWriteBehaviorAndValidation(t *testing.T) {
 	}
 }
 
+func TestS3MountedWriteRoutesRejectPhysicalPVCOverlap(t *testing.T) {
+	for _, pair := range [][2]string{{"results", "results/child"}, {"", "results"}, {".", "results"}, {"results", "."}} {
+		t.Run("overlapping subPaths "+pair[0]+" and "+pair[1], func(t *testing.T) {
+			c := existingConfig()
+			addVolume(c, "workspace-child", "shared-data")
+			addMount(c, "workspace", "/outputs/parent", map[string]interface{}{"subPath": pair[0]})
+			addMount(c, "workspace-child", "/outputs/child", map[string]interface{}{"subPath": pair[1]})
+			first, second := mountedS3Write("one", "out/", "workspace", nil), mountedS3Write("two", "out/", "workspace-child", nil)
+			withWriteSubPath(first, pair[0])
+			withWriteSubPath(second, pair[1])
+			c.GenericS3 = []*config.GenericS3Storage{first, second}
+			if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "overlap") {
+				t.Fatalf("overlapping write routes accepted: %v", err)
+			}
+		})
+	}
+
+	t.Run("unknown dynamic subPath sharing", func(t *testing.T) {
+		c := existingConfig()
+		addVolume(c, "workspace-child", "shared-data")
+		addMount(c, "workspace", "/outputs/dynamic", map[string]interface{}{"subPathExpr": "task-$(POD_NAME)"})
+		addMount(c, "workspace-child", "/outputs/static", map[string]interface{}{"subPath": "results"})
+		first, second := mountedS3Write("one", "out/", "workspace", nil), mountedS3Write("two", "out/", "workspace-child", nil)
+		withWriteSubPath(second, "results")
+		c.GenericS3 = []*config.GenericS3Storage{first, second}
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Fatalf("dynamic write route sharing accepted: %v", err)
+		}
+	})
+
+	t.Run("read and write may share one route", func(t *testing.T) {
+		c := existingConfig()
+		addMount(c, "workspace", "/outputs", map[string]interface{}{"subPath": "results"})
+		backend := mountedS3Write("one", "out/", "workspace", nil)
+		backend.MountedRead = &config.S3MountedRead{Volume: "workspace", Prefix: "in/", MountView: &config.S3MountedRead_SubPath{SubPath: "results"}}
+		withWriteSubPath(backend, "results")
+		c.GenericS3 = []*config.GenericS3Storage{backend}
+		if _, err := Resolve(&tes.Task{Id: "task-123"}, c); err != nil {
+			t.Fatalf("read and write on one route were rejected: %v", err)
+		}
+	})
+}
+
 func TestNamedContainerSelection(t *testing.T) {
 	c := existingConfig()
 	c.Kubernetes.Storage.WorkerContainer = "funnel-worker"

@@ -32,7 +32,6 @@ require (
 	github.com/elazarl/go-bindata-assetfs v1.0.1
 	github.com/gammazero/workerpool v1.2.2
 	github.com/getkin/kin-openapi v0.150.0
-	github.com/getlantern/deepcopy v0.0.0-20160317154340-7f45deb8130a
 	github.com/gizak/termui v2.3.0+incompatible
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/go-test/deep v1.1.2

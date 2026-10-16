@@ -197,8 +197,6 @@ github.com/gammazero/workerpool v1.2.2/go.mod h1:nbtgxeEYc+vZWZdZjYpHOyVwqXlStlp
 github.com/garyburd/redigo v1.1.1-0.20170914051019-70e1b1943d4f/go.mod h1:NR3MbYisc3/PwhQ00EMzDiPmrwpPxAn5GI05/YaO1SY=
 github.com/getkin/kin-openapi v0.150.0 h1:7+O1HMsrAB4BevQDElbLAeCAWwyJC/RjQJYw4oosUUU=
 github.com/getkin/kin-openapi v0.150.0/go.mod h1:1+BHDzstro+P5CKtPy1X4PfofnFgmRe6uvMy9+r9fKY=
-github.com/getlantern/deepcopy v0.0.0-20160317154340-7f45deb8130a h1:yU/FENpkHYISWsQrbr3pcZOBj0EuRjPzNc1+dTCLu44=
-github.com/getlantern/deepcopy v0.0.0-20160317154340-7f45deb8130a/go.mod h1:AEugkNu3BjBxyz958nJ5holD9PRjta6iprcoUauDbU4=
 github.com/gizak/termui v2.3.0+incompatible h1:S8wJoNumYfc/rR5UezUM4HsPEo3RJh0LKdiuDWQpjqw=
 github.com/gizak/termui v2.3.0+incompatible/go.mod h1:PkJoWUt/zacQKysNfQtcw1RW+eK2SxkieVBtl+4ovLA=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=

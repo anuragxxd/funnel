@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/getlantern/deepcopy"
 	"github.com/rs/xid"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // Marshaler marshals tasks to indented JSON.
@@ -117,8 +117,7 @@ func TerminalState(s State) bool {
 
 // GetBasicView returns the basic view of a task.
 func (task *Task) GetBasicView() *Task {
-	view := &Task{}
-	deepcopy.Copy(view, task)
+	view := proto.Clone(task).(*Task)
 
 	// remove contents from inputs
 	for _, v := range view.Inputs {

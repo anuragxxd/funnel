@@ -6,7 +6,23 @@ import (
 
 	"github.com/calypr/funnel/tes"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/proto"
 )
+
+// protoSlicesEqual reports whether two slices of protobuf messages are equal
+// (proto.Equal per element). testify's DeepEqual trips over protobuf
+// implementation internals, so protos must be compared with proto.Equal.
+func protoSlicesEqual[T proto.Message](want, got []T) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for i := range want {
+		if !proto.Equal(want[i], got[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 func TestParse(t *testing.T) {
 	cwd, err := os.Getwd()
@@ -155,7 +171,7 @@ func TestParse(t *testing.T) {
 		t.Fatal(perr)
 	}
 
-	if !assert.Equal(t, expected, result) {
+	if !assert.True(t, protoSlicesEqual(expected, result)) {
 		s, _ := tes.MarshalToString(expected[0])
 		t.Log("Expected", s)
 		q, _ := tes.MarshalToString(result[0])

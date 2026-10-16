@@ -132,7 +132,7 @@ func TestMapTask(t *testing.T) {
 		},
 	}
 
-	if !assert.Equal(t, ei, f.Inputs) {
+	if !assert.True(t, protoSlicesEqual(ei, f.Inputs)) {
 		t.Log("Expected", fmt.Sprintf("%+v", ei))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Inputs))
 		t.Fatal("unexpected mapper inputs")
@@ -146,7 +146,7 @@ func TestMapTask(t *testing.T) {
 		t.Fatal("unexpected content")
 	}
 
-	if !assert.Equal(t, eo, f.Outputs) {
+	if !assert.True(t, protoSlicesEqual(eo, f.Outputs)) {
 		t.Log("Expected", fmt.Sprintf("%+v", eo))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Outputs))
 		t.Fatal("unexpected mapper outputs")

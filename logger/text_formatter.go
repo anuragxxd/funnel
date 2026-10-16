@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kr/pretty"
 	"github.com/logrusorgru/aurora/v4"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/term"
@@ -107,12 +106,12 @@ func (f *textFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 			} else if b, err := jsonmar.Marshal(x); err == nil {
 				v = string(b)
 			} else {
-				v = pretty.Sprint(x)
+				v = fmt.Sprintf("%+v", x)
 			}
 		case fmt.Stringer:
 		case error:
 		default:
-			v = pretty.Sprint(x)
+			v = fmt.Sprintf("%+v", x)
 		}
 
 		if vString, ok := v.(string); ok {

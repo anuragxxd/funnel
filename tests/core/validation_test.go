@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andreyvit/diff"
 	"github.com/calypr/funnel/tes"
+	"github.com/google/go-cmp/cmp"
 	"github.com/calypr/funnel/tests"
 	"google.golang.org/grpc/status"
 )
@@ -22,7 +22,7 @@ Task.Executors: at least one executor is required
 
 	e := status.Convert(err).Message()
 	if e != expected {
-		t.Error("unexpected error message", diff.LineDiff(e, expected))
+		t.Error("unexpected error message", cmp.Diff(expected, e))
 	}
 }
 
@@ -100,6 +100,6 @@ Task.Volumes[0]: must be an absolute path
 
 	e := status.Convert(err).Message()
 	if e != expected {
-		t.Errorf("expected volumes error message. diff:\n%s", diff.LineDiff(e, expected))
+		t.Errorf("expected volumes error message. diff:\n%s", cmp.Diff(expected, e))
 	}
 }

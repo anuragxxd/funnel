@@ -5,8 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/go-test/deep"
 	"github.com/calypr/funnel/tes"
+	"github.com/google/go-cmp/cmp"
+	"google.golang.org/protobuf/testing/protocmp"
 )
 
 func TestMapTask(t *testing.T) {
@@ -132,12 +133,10 @@ func TestMapTask(t *testing.T) {
 		},
 	}
 
-	if diff := deep.Equal(f.Inputs, ei); diff != nil {
+	if diff := cmp.Diff(ei, f.Inputs, protocmp.Transform()); diff != "" {
 		t.Log("Expected", fmt.Sprintf("%+v", ei))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Inputs))
-		for _, d := range diff {
-			t.Log("Diff", d)
-		}
+		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper inputs")
 	}
 
@@ -149,12 +148,10 @@ func TestMapTask(t *testing.T) {
 		t.Fatal("unexpected content")
 	}
 
-	if diff := deep.Equal(f.Outputs, eo); diff != nil {
+	if diff := cmp.Diff(eo, f.Outputs, protocmp.Transform()); diff != "" {
 		t.Log("Expected", fmt.Sprintf("%+v", eo))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Outputs))
-		for _, d := range diff {
-			t.Log("Diff", d)
-		}
+		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper outputs")
 	}
 
@@ -166,21 +163,17 @@ func TestMapTask(t *testing.T) {
 		fmt.Println("Actual volume:", vol)
 	}
 
-	if diff := deep.Equal(f.Volumes, ev); diff != nil {
+	if diff := cmp.Diff(ev, f.Volumes, protocmp.Transform()); diff != "" {
 		t.Log("Expected", fmt.Sprintf("%+v", ev))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Volumes))
-		for _, d := range diff {
-			t.Log("Diff", d)
-		}
+		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper volumes")
 	}
 
-	if diff := deep.Equal(f.InputVolumes, eiv); diff != nil {
+	if diff := cmp.Diff(eiv, f.InputVolumes, protocmp.Transform()); diff != "" {
 		t.Log("Expected", fmt.Sprintf("%+v", eiv))
 		t.Log("Actual", fmt.Sprintf("%+v", f.InputVolumes))
-		for _, d := range diff {
-			t.Log("Diff", d)
-		}
+		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper input volumes")
 	}
 

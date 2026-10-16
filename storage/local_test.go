@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-test/deep"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestLocalSupports(t *testing.T) {
@@ -89,7 +89,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	for _, diff := range deep.Equal(list, expected1) {
+	if diff := cmp.Diff(expected1, list); diff != "" {
 		t.Error(diff)
 	}
 
@@ -113,7 +113,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	for _, diff := range deep.Equal(list, expected2) {
+	if diff := cmp.Diff(expected2, list); diff != "" {
 		t.Error(diff)
 	}
 
@@ -137,7 +137,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	for _, diff := range deep.Equal(list, expected3) {
+	if diff := cmp.Diff(expected3, list); diff != "" {
 		t.Error(diff)
 	}
 }

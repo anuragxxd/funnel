@@ -12,7 +12,6 @@ require (
 	dario.cat/mergo v1.0.2
 	github.com/IBM/sarama v1.61.1
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b
-	github.com/andreyvit/diff v0.0.0-20170406064948-c7f18ee00883
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
@@ -33,8 +32,8 @@ require (
 	github.com/gammazero/workerpool v1.2.2
 	github.com/getkin/kin-openapi v0.150.0
 	github.com/go-playground/validator/v10 v10.30.5
-	github.com/go-test/deep v1.1.2
 	github.com/goccy/go-yaml v1.19.2
+	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
@@ -44,7 +43,6 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
-	github.com/kr/pretty v0.3.1
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/logrusorgru/aurora/v4 v4.0.0
@@ -154,7 +152,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.23 // indirect
 	github.com/hashicorp/go-uuid v1.0.4 // indirect
@@ -172,7 +169,6 @@ require (
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
@@ -214,10 +210,8 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
-	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/stretchr/objx v0.8.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect

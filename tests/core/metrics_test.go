@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kr/pretty"
+	"fmt"
 
 	"github.com/calypr/funnel/tes"
 	"github.com/calypr/funnel/tests"
@@ -73,5 +73,5 @@ func TestMetrics(t *testing.T) {
 			}
 		}
 	}
-	pretty.Println(met["funnel_tasks_state_count"].Metric)
+		fmt.Printf("%+v\n", met["funnel_tasks_state_count"].Metric)
 }

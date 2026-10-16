@@ -4,8 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/go-test/deep"
 	"github.com/calypr/funnel/tes"
+	"github.com/google/go-cmp/cmp"
+	"google.golang.org/protobuf/testing/protocmp"
 )
 
 func TestParse(t *testing.T) {
@@ -155,14 +156,12 @@ func TestParse(t *testing.T) {
 		t.Fatal(perr)
 	}
 
-	if diff := deep.Equal(result, expected); diff != nil {
+	if diff := cmp.Diff(expected, result, protocmp.Transform()); diff != "" {
 		s, _ := tes.MarshalToString(expected[0])
 		t.Log("Expected", s)
 		q, _ := tes.MarshalToString(result[0])
 		t.Log("Actual", q)
-		for _, d := range diff {
-			t.Log("Diff", d)
-		}
+		t.Log("Diff", diff)
 		t.Fatal("unexpected results")
 	}
 }

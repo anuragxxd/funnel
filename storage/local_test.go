@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLocalSupports(t *testing.T) {
@@ -89,9 +89,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	if diff := cmp.Diff(expected1, list); diff != "" {
-		t.Error(diff)
-	}
+	assert.Equal(t, expected1, list)
 
 	list, gerr = l.List(ctx, d+"/test_dir")
 	if gerr != nil {
@@ -113,9 +111,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	if diff := cmp.Diff(expected2, list); diff != "" {
-		t.Error(diff)
-	}
+	assert.Equal(t, expected2, list)
 
 	list, gerr = l.List(ctx, "../tests/storage/testdata/test_dir")
 	if gerr != nil {
@@ -137,9 +133,7 @@ func TestLocalListDirectory(t *testing.T) {
 		},
 	}
 
-	if diff := cmp.Diff(expected3, list); diff != "" {
-		t.Error(diff)
-	}
+	assert.Equal(t, expected3, list)
 }
 
 func TestLocalJoin(t *testing.T) {

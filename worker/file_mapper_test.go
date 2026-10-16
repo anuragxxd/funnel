@@ -6,8 +6,7 @@ import (
 	"testing"
 
 	"github.com/calypr/funnel/tes"
-	"github.com/google/go-cmp/cmp"
-	"google.golang.org/protobuf/testing/protocmp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMapTask(t *testing.T) {
@@ -133,10 +132,9 @@ func TestMapTask(t *testing.T) {
 		},
 	}
 
-	if diff := cmp.Diff(ei, f.Inputs, protocmp.Transform()); diff != "" {
+	if !assert.Equal(t, ei, f.Inputs) {
 		t.Log("Expected", fmt.Sprintf("%+v", ei))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Inputs))
-		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper inputs")
 	}
 
@@ -148,10 +146,9 @@ func TestMapTask(t *testing.T) {
 		t.Fatal("unexpected content")
 	}
 
-	if diff := cmp.Diff(eo, f.Outputs, protocmp.Transform()); diff != "" {
+	if !assert.Equal(t, eo, f.Outputs) {
 		t.Log("Expected", fmt.Sprintf("%+v", eo))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Outputs))
-		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper outputs")
 	}
 
@@ -163,17 +160,15 @@ func TestMapTask(t *testing.T) {
 		fmt.Println("Actual volume:", vol)
 	}
 
-	if diff := cmp.Diff(ev, f.Volumes, protocmp.Transform()); diff != "" {
+	if !assert.Equal(t, ev, f.Volumes) {
 		t.Log("Expected", fmt.Sprintf("%+v", ev))
 		t.Log("Actual", fmt.Sprintf("%+v", f.Volumes))
-		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper volumes")
 	}
 
-	if diff := cmp.Diff(eiv, f.InputVolumes, protocmp.Transform()); diff != "" {
+	if !assert.Equal(t, eiv, f.InputVolumes) {
 		t.Log("Expected", fmt.Sprintf("%+v", eiv))
 		t.Log("Actual", fmt.Sprintf("%+v", f.InputVolumes))
-		t.Log("Diff", diff)
 		t.Fatal("unexpected mapper input volumes")
 	}
 

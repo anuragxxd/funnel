@@ -5,8 +5,7 @@ import (
 	"testing"
 
 	"github.com/calypr/funnel/tes"
-	"github.com/google/go-cmp/cmp"
-	"google.golang.org/protobuf/testing/protocmp"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestParse(t *testing.T) {
@@ -156,12 +155,11 @@ func TestParse(t *testing.T) {
 		t.Fatal(perr)
 	}
 
-	if diff := cmp.Diff(expected, result, protocmp.Transform()); diff != "" {
+	if !assert.Equal(t, expected, result) {
 		s, _ := tes.MarshalToString(expected[0])
 		t.Log("Expected", s)
 		q, _ := tes.MarshalToString(result[0])
 		t.Log("Actual", q)
-		t.Log("Diff", diff)
 		t.Fatal("unexpected results")
 	}
 }

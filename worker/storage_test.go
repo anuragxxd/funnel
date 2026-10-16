@@ -7,8 +7,7 @@ import (
 	"github.com/calypr/funnel/events"
 	"github.com/calypr/funnel/storage"
 	"github.com/calypr/funnel/tes"
-	"github.com/google/go-cmp/cmp"
-	"google.golang.org/protobuf/testing/protocmp"
+	"github.com/stretchr/testify/assert"
 )
 
 type fakelist struct {
@@ -53,7 +52,5 @@ func TestFlattenInputs(t *testing.T) {
 		{Url: "s3://bkt/path/to/two.txt", Path: "/inputs/foo/to/two.txt"},
 	}
 
-	if diff := cmp.Diff(expected, flat, protocmp.Transform()); diff != "" {
-		t.Error(diff)
-	}
+	assert.Equal(t, expected, flat)
 }

@@ -31,7 +31,6 @@ require (
 	github.com/getkin/kin-openapi v0.150.0
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/goccy/go-yaml v1.19.2
-	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
@@ -44,7 +43,6 @@ require (
 	github.com/k0kubun/pp v3.0.1+incompatible
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v4 v4.5.0
-	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/moby/moby/client v0.6.2
 	github.com/ncw/swift/v2 v2.0.5
@@ -151,6 +149,7 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.23 // indirect
 	github.com/hashicorp/go-uuid v1.0.4 // indirect

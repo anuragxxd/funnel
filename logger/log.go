@@ -9,7 +9,6 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/logrusorgru/aurora/v4"
 	"github.com/calypr/funnel/util"
 	"github.com/sirupsen/logrus"
 )
@@ -166,7 +165,7 @@ func (l *Logger) WithFields(args ...any) *Logger {
 func PrintSimpleError(err error) {
 	e := "Error:"
 	if isColorTerminal(os.Stderr) {
-		e = aurora.Red(e).String()
+		e = ansiRedS(e)
 	}
 	fmt.Fprintf(os.Stderr, "%s %s\n", e, err.Error())
 }

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/calypr/funnel/compute/kubernetes/storageplan"
 	"github.com/calypr/funnel/config"
 	"github.com/calypr/funnel/events"
 	"github.com/calypr/funnel/storage"
@@ -29,8 +30,11 @@ type DefaultWorker struct {
 	Command
 }
 
+var errTaskCanceled = errors.New("task canceled")
+
 // Configuration of the task executor.
 type Executor struct {
+	StoragePlan *storageplan.Plan
 	// "docker" or "kubernetes"
 	Backend string
 	// Kubernetes executor template
@@ -90,6 +94,10 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 		return
 	}
 
+	if plan := r.Executor.StoragePlan; plan != nil && plan.TaskID != task.Id {
+		return fmt.Errorf("storage plan belongs to task %q, not %q", plan.TaskID, task.Id)
+	}
+
 	// set up task specific utilities
 	event = events.NewTaskWriter(task.GetId(), 0, r.EventWriter)
 	mapper = NewFileMapper(filepath.Join(r.Conf.WorkDir, task.GetId()))
@@ -118,11 +126,11 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 	defer func() {
 		event.EndTime(time.Now())
 		switch {
-		case run.taskCanceled:
+		case errors.Is(context.Cause(run.ctx), errTaskCanceled):
 			// The task was canceled.
 			event.Info("Canceled")
 			event.State(tes.State_CANCELED)
-			runerr = fmt.Errorf("task canceled")
+			runerr = errTaskCanceled
 		case run.syserr != nil:
 			// Something else failed
 			event.Error("System error", "error", run.syserr)
@@ -149,7 +157,8 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 		run.syserr = e
 	})
 
-	ctx := r.pollForCancel(pctx, func() { run.taskCanceled = true })
+	ctx, stopPolling := r.pollForCancel(pctx)
+	defer stopPolling()
 	run.ctx = ctx
 
 	// Prepare file mapper, which maps task file URLs to host filesystem paths
@@ -234,6 +243,7 @@ func (r *DefaultWorker) Run(pctx context.Context) (runerr error) {
 				}
 
 				taskCommand = &KubernetesCommand{
+					StoragePlan:    r.Executor.StoragePlan,
 					TaskId:         task.Id,
 					JobId:          i,
 					StdinFile:      d.Stdin,
@@ -424,15 +434,13 @@ func (r *DefaultWorker) openStepLogs(mapper *FileMapper, s *stepWorker, d *tes.E
 func (r *DefaultWorker) validate(mapper *FileMapper) error {
 	// TODO need to switch on directory type and check list as well.
 	for _, input := range mapper.Inputs {
-		unsupported := r.Store.UnsupportedOperations(input.Url)
-		if unsupported.Get != nil {
-			return fmt.Errorf("Input download not supported by storage: %v", unsupported.Get)
+		if err := storage.CheckGet(r.Store, input.Url); err != nil {
+			return fmt.Errorf("Input download not supported by storage: %w", err)
 		}
 	}
 	for _, output := range mapper.Outputs {
-		unsupported := r.Store.UnsupportedOperations(output.Url)
-		if unsupported.Put != nil {
-			return fmt.Errorf("Output upload not supported by storage: %v", unsupported.Put)
+		if err := storage.CheckPut(r.Store, output.Url); err != nil {
+			return fmt.Errorf("Output upload not supported by storage: %w", err)
 		}
 	}
 	return nil
@@ -446,12 +454,14 @@ func (r *DefaultWorker) sanitizeValues(value string) string {
 	return re.ReplaceAllString(value, "")
 }
 
-func (r *DefaultWorker) pollForCancel(pctx context.Context, cancelCallback func()) context.Context {
-	taskctx, cancel := context.WithCancel(pctx)
+func (r *DefaultWorker) pollForCancel(pctx context.Context) (context.Context, func()) {
+	taskctx, cancel := context.WithCancelCause(pctx)
+	done := make(chan struct{})
 
 	// Start a goroutine that polls the server to watch for a canceled state.
 	// If a cancel state is found, "taskctx" is canceled.
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(r.Conf.PollingRate.AsDuration())
 		defer ticker.Stop()
 
@@ -462,11 +472,14 @@ func (r *DefaultWorker) pollForCancel(pctx context.Context, cancelCallback func(
 			case <-ticker.C:
 				state, _ := r.TaskReader.State(taskctx)
 				if tes.TerminalState(state) {
-					cancel()
-					cancelCallback()
+					cancel(errTaskCanceled)
+					return
 				}
 			}
 		}
 	}()
-	return taskctx
+	return taskctx, func() {
+		cancel(nil)
+		<-done
+	}
 }

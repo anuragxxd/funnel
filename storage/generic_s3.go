@@ -23,10 +23,9 @@ import (
 	s3util "github.com/calypr/funnel/util/s3"
 )
 
-// GenericS3 provides access to an S3-compatible object store (MinIO, Ceph,
-// OpenStack Swift S3 API, etc). It uses the AWS S3 client configured with a
-// custom endpoint and path-style addressing.
+// GenericS3 provides access to an S3 object store.
 type GenericS3 struct {
+	// api client state
 	cfg      aws.Config
 	endpoint string
 	// baseURL is the endpoint URL with scheme, used as the SDK BaseEndpoint.
@@ -41,6 +40,12 @@ type GenericS3 struct {
 
 	once sync.Once
 	s3c  *s3.Client
+
+	// mounted (CSI mountpoint) fast paths
+	bucket             string
+	configuredEndpoint string
+	mountedRead        *mountedS3Reader
+	mountedWrite       *mountedS3Writer
 }
 
 // NewGenericS3 creates a new GenericS3 instance, given an endpoint URL
@@ -65,7 +70,6 @@ func NewGenericS3(conf *config.GenericS3Storage) (*GenericS3, error) {
 	loadOpts := []func(*awscfg.LoadOptions) error{
 		awscfg.WithRegion(region),
 	}
-	regionSet := conf.Region != ""
 	if conf.Key != "" && conf.Secret != "" {
 		loadOpts = append(loadOpts,
 			awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(conf.Key, conf.Secret, "")))
@@ -86,14 +90,25 @@ func NewGenericS3(conf *config.GenericS3Storage) (*GenericS3, error) {
 	}
 
 	return &GenericS3{
-		cfg:       awsConfig,
-		endpoint:  endpoint + "/",
-		baseURL:   baseURL,
-		pathStyle: pathStyle,
-		region:    region,
-		regionSet: regionSet,
-		kmskeyId:  conf.KmsKeyID,
+		cfg:                awsConfig,
+		endpoint:           endpoint + "/",
+		baseURL:            baseURL,
+		pathStyle:          pathStyle,
+		region:             region,
+		regionSet:          conf.Region != "",
+		kmskeyId:           conf.KmsKeyID,
+		bucket:             conf.Bucket,
+		configuredEndpoint: conf.Endpoint,
 	}, nil
+}
+
+// schemeEndpoint rebuilds a full endpoint URL (with scheme) from the raw
+// configured endpoint and the parsed host.
+func schemeEndpoint(rawEndpoint, host string) string {
+	if strings.HasPrefix(rawEndpoint, "https://") {
+		return "https://" + host
+	}
+	return "http://" + host
 }
 
 // client lazily builds the S3 client, resolving the bucket region for AWS
@@ -141,15 +156,6 @@ func (s3b *GenericS3) bucketRegion(ctx context.Context, bucket string) (string, 
 	return manager.GetBucketRegion(ctx, client, bucket)
 }
 
-// schemeEndpoint rebuilds a full endpoint URL (with scheme) from the raw
-// configured endpoint and the parsed host.
-func schemeEndpoint(rawEndpoint, host string) string {
-	if strings.HasPrefix(rawEndpoint, "https://") {
-		return "https://" + host
-	}
-	return "http://" + host
-}
-
 // isDir returns true if a remote S3 object is a directory, false otherwise
 func (s3b *GenericS3) isDir(ctx context.Context, bucketName, objectName string) (bool, error) {
 	// Check if the objectName ends with '/' - often used to represent 'folders'
@@ -181,6 +187,13 @@ func (s3b *GenericS3) isDir(ctx context.Context, bucketName, objectName string) 
 
 // Stat returns information about the object at the given storage URL.
 func (s3b *GenericS3) Stat(ctx context.Context, url string) (*Object, error) {
+	if raw, ok := s3b.mountedURL(url); ok {
+		obj, err := s3b.mountedRead.Stat(ctx, raw)
+		if obj != nil {
+			obj.URL = url
+		}
+		return obj, err
+	}
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 	u, err := s3b.parse(url)
 	if err != nil {
@@ -217,6 +230,13 @@ func (s3b *GenericS3) Stat(ctx context.Context, url string) (*Object, error) {
 
 // List lists the objects at the given url.
 func (s3b *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
+	if raw, ok := s3b.mountedURL(url); ok {
+		objects, err := s3b.mountedRead.List(ctx, raw)
+		for _, obj := range objects {
+			obj.URL = strings.TrimSuffix(url, "/") + strings.TrimPrefix(obj.URL, strings.TrimSuffix(raw, "/"))
+		}
+		return objects, err
+	}
 	u, err := s3b.parse(url)
 	if err != nil {
 		return nil, err
@@ -253,6 +273,13 @@ func (s3b *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 
 // Get copies an object from S3 to the host path.
 func (s3b *GenericS3) Get(ctx context.Context, url, path string) (*Object, error) {
+	if raw, ok := s3b.mountedURL(url); ok {
+		obj, err := s3b.mountedRead.Get(ctx, raw, path)
+		if obj != nil {
+			obj.URL = url
+		}
+		return obj, err
+	}
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 	logger.Debug("genericS3: Get called", "url", url, "path", path)
 
@@ -297,7 +324,7 @@ func (s3b *GenericS3) Get(ctx context.Context, url, path string) (*Object, error
 	return obj, nil
 }
 
-// download streams an object to a file without using os.Rename
+// download streams an object to a local file, staged atomically.
 func (s3b *GenericS3) download(ctx context.Context, bucket, objectPath, filePath string) error {
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 
@@ -312,132 +339,108 @@ func (s3b *GenericS3) download(ctx context.Context, bucket, objectPath, filePath
 	}
 	defer res.Body.Close()
 
-	// Step 2: Create the local file (overwrite if exists)
-	logger.Debug("genericS3: creating local file", "filePath", filePath)
-	dir := filepath.Dir(filePath)
-	err = os.MkdirAll(dir, 0755)
-	if err != nil {
-		return fmt.Errorf("failed creating directories: %w", err)
-	}
-
-	outFile, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("failed creating file: %w", err)
-	}
-
-	// Step 3: Copy the contents
-	logger.Debug("genericS3: io.Copy", "outFile", outFile.Name(), "bucket", bucket)
-	if _, err := io.Copy(outFile, res.Body); err != nil {
-		outFile.Close()
-		return fmt.Errorf("failed writing file: %w", err)
-	}
-
-	// Close explicitly (not via defer) so Mountpoint begins flushing to S3
-	// before we poll for readability below.
-	if err := outFile.Close(); err != nil {
-		return fmt.Errorf("failed closing file: %w", err)
-	}
-	return waitReadable(filePath, logger)
-}
-
-// waitReadable polls until the file at path is readable. When the path is on a
-// Mountpoint-for-S3 backed filesystem, closing the write handle triggers an
-// async S3 upload; os.Stat returns EPERM until that upload finishes.
-func waitReadable(path string, logger *logger.Logger) error {
-	const mountpointFlushTimeout = 5 * time.Minute
-	const mountpointFlushInterval = 2 * time.Second
-	deadline := time.Now().Add(mountpointFlushTimeout)
-	for {
-		_, err := os.Stat(path)
-		if err == nil {
-			break
+	// Step 2: Stage the file contents atomically
+	logger.Debug("genericS3: staging local file", "filePath", filePath)
+	err = writeFileAtomically(ctx, filePath, func(outFile *os.File) error {
+		logger.Debug("genericS3: io.Copy", "outFile", outFile.Name(), "bucket", bucket)
+		if _, err := io.Copy(outFile, res.Body); err != nil {
+			return fmt.Errorf("failed writing file: %w", err)
 		}
-		if time.Now().Before(deadline) && (errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrNotExist)) {
-			logger.Debug("genericS3: waiting for file to be readable after write", "path", path, "error", err)
-			time.Sleep(mountpointFlushInterval)
-			continue
-		}
-		return fmt.Errorf("failed waiting for file to become readable: %w", err)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed writing local file: %w", err)
+	}
+
+	if _, err := waitForLocalFile(ctx, filePath); err != nil {
+		return fmt.Errorf("failed waiting for input file to become readable: %w", err)
 	}
 	return nil
 }
 
-// Put copies an object (file) from the host path to S3.
-// Update Put function to be able to upload directories (a la Get() function)
-func (s3b *GenericS3) Put(ctx context.Context, url, path string) (*Object, error) {
-	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
+func waitForLocalFile(ctx context.Context, path string) (os.FileInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(path)
+		if err == nil {
+			return info, nil
+		}
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
 
+// Put publishes a local file through an API upload or a configured mounted write.
+// Mounted writes verify remote existence and size; API uploads require an upload response.
+// Directory publication returns aggregate metadata after every file succeeds.
+func (s3b *GenericS3) Put(ctx context.Context, url, path string) (*Object, error) {
+	if _, matched := s3b.mountedWriteURL(url); matched {
+		return s3b.putMounted(ctx, url, path)
+	}
 	u, err := s3b.parse(url)
 	if err != nil {
 		return nil, err
 	}
 
-	// Wait for the local path to become readable. When the local path is on a
-	// Mountpoint-for-S3 backed filesystem and the file was written by another
-	// mount instance (the executor pod), os.Stat returns EPERM until Mountpoint
-	// finishes flushing the write to S3. Poll until the file is readable or the
-	// timeout expires.
-	const mountpointFlushTimeout = 5 * time.Minute
-	const mountpointFlushInterval = 2 * time.Second
-	deadline := time.Now().Add(mountpointFlushTimeout)
-	var fileInfo os.FileInfo
-	for {
-		var err error
-		fileInfo, err = os.Stat(path)
-		if err == nil {
-			break
-		}
-		if time.Now().Before(deadline) && (errors.Is(err, syscall.EPERM) || errors.Is(err, os.ErrNotExist)) {
-			logger.Debug("genericS3: waiting for output file to become readable", "path", path, "error", err)
-			time.Sleep(mountpointFlushInterval)
-			continue
-		}
-		return nil, fmt.Errorf("genericS3: putting object %s: %v", url, err)
+	fileInfo, err := waitForLocalFile(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("genericS3: waiting for output file %s: %w", path, err)
 	}
 
-	// Check if the path is a directory
 	if fileInfo.IsDir() {
-		// Walk the directory and upload all files and subdirectories
+		obj := &Object{URL: url, Name: u.path}
 		err = filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !info.IsDir() {
-				// Upload the file
 				relativePath, err := filepath.Rel(path, filePath)
 				if err != nil {
 					return err
 				}
 				uploadPath := filepath.ToSlash(filepath.Join(u.path, relativePath))
-				err = s3b.upload(ctx, u.bucket, uploadPath, filePath)
+				size, err := s3b.upload(ctx, u.bucket, uploadPath, filePath)
 				if err != nil {
-					return fmt.Errorf("genericS3: putting nested object %s: %v", url, err)
+					return fmt.Errorf("genericS3: putting nested object %s: %w", uploadPath, err)
 				}
+				obj.Size += size
 			}
 			return nil
 		})
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		err = s3b.upload(ctx, u.bucket, u.path, path)
-		if err != nil {
-			return nil, fmt.Errorf("genericS3: putting object %s: %v", url, err)
-		}
+		return obj, nil
 	}
-
-	obj, err := s3b.Stat(ctx, url)
-
-	return obj, err
+	if _, err := s3b.upload(ctx, u.bucket, u.path, path); err != nil {
+		return nil, fmt.Errorf("genericS3: putting object %s: %w", url, err)
+	}
+	return s3b.Stat(ctx, url)
 }
 
-// upload copies a local file to the bucket at the given key.
-func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) error {
+// upload copies a local file to the bucket at the given key, returning the
+// size of the uploaded object.
+func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) (int64, error) {
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer f.Close()
 
@@ -451,8 +454,20 @@ func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) 
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s3b.kmskeyId)
 	}
-	_, err = s3b.client(ctx, bucket).PutObject(ctx, in)
-	return err
+	out, err := s3b.client(ctx, bucket).PutObject(ctx, in)
+	if err != nil {
+		return 0, err
+	}
+	// Determine the uploaded size via the ETag-tagged HEAD request.
+	res, err := s3b.client(ctx, bucket).HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket:  aws.String(bucket),
+		Key:     aws.String(key),
+		IfMatch: out.ETag,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return aws.ToInt64(res.ContentLength), nil
 }
 
 // Join joins the given URL with the given subpath.
@@ -463,10 +478,24 @@ func (s3b *GenericS3) Join(url, path string) (string, error) {
 // UnsupportedOperations describes which operations (Get, Put, etc) are not
 // supported for the given URL.
 func (s3b *GenericS3) UnsupportedOperations(url string) UnsupportedOperations {
+	unsupported := s3b.apiUnsupportedOperations(url)
+	if raw, matched := s3b.mountedURL(url); matched {
+		err := validateInputURL(raw)
+		unsupported.Get, unsupported.Stat, unsupported.List = err, err, err
+	}
+	if raw, matched := s3b.mountedWriteURL(url); matched {
+		err := validateInputURL(raw)
+		unsupported.Put, unsupported.Join = err, err
+	}
+	return unsupported
+}
+
+func (s3b *GenericS3) apiUnsupportedOperations(url string) UnsupportedOperations {
 	u, err := s3b.parse(url)
 	if err != nil {
 		return AllUnsupported(err)
 	}
+
 	_, err = s3b.client(context.Background(), u.bucket).HeadBucket(context.Background(), &s3.HeadBucketInput{
 		Bucket: aws.String(u.bucket),
 	})
@@ -497,4 +526,16 @@ func (s3b *GenericS3) parse(rawurl string) (*urlparts, error) {
 		url.path = split[1]
 	}
 	return url, nil
+}
+
+func (s3b *GenericS3) mountedURL(raw string) (string, bool) {
+	if s3b.mountedRead == nil {
+		return "", false
+	}
+	u, err := s3b.parse(raw)
+	if err != nil {
+		return "", false
+	}
+	canonical := "s3://" + u.bucket + "/" + u.path
+	return canonical, inputPrefix(strings.TrimSuffix(canonical, "/"), s3b.mountedRead.prefix)
 }

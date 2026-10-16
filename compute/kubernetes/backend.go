@@ -15,7 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/hashicorp/go-multierror"
+	"errors"
 	"github.com/ohsu-comp-bio/funnel/compute/kubernetes/resources"
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/events"
@@ -299,7 +299,7 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 	b.log.Debug("deleting Job", "taskID", taskId)
 	err := resources.DeleteJob(ctx, b.conf, taskId, b.client, b.log)
 	if err != nil {
-		errs = multierror.Append(errs, err)
+		errs = errors.Join(errs, err)
 		b.log.Error("deleting Job", "error", err)
 	}
 
@@ -317,14 +317,14 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 	}
 
 	if err := resources.DeleteServiceAccount(ctx, taskId, b.conf.Kubernetes.JobsNamespace, b.client, b.log, saOpts); err != nil {
-		errs = multierror.Append(errs, err)
+		errs = errors.Join(errs, err)
 		b.log.Error("deleting Worker ServiceAccount", "taskID", taskId, "error", err)
 	}
 
 	// Delete PV
 	err = resources.DeletePV(ctx, taskId, b.conf.Kubernetes.JobsNamespace, b.client, b.log)
 	if err != nil {
-		errs = multierror.Append(errs, err)
+		errs = errors.Join(errs, err)
 		b.log.Error("deleting Worker PV", "error", err)
 	}
 	return errs

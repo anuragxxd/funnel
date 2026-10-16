@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alecthomas/units"
 	"github.com/calypr/funnel/logger"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 )
@@ -186,7 +185,7 @@ func DefaultConfig() *Config {
 		},
 		Swift: &SwiftStorage{
 			MaxRetries:     20,
-			ChunkSizeBytes: int64(500 * units.MB),
+			ChunkSizeBytes: int64(500 * 1000*1000),
 		},
 		HTCondor:   &HPCBackend{},
 		Slurm:      &HPCBackend{},

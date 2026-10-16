@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rs/xid"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -70,7 +70,11 @@ const (
 // GenerateID generates a task ID string.
 // IDs are globally unique and sortable.
 func GenerateID() string {
-	id := xid.New()
+	id, err := uuid.NewUUID()
+	if err != nil {
+		// fall back to the random v4 UUID if the time-based one fails
+		return uuid.NewString()
+	}
 	return id.String()
 }
 

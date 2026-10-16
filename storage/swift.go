@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alecthomas/units"
 	"github.com/ncw/swift/v2"
 	"github.com/calypr/funnel/config"
 	"github.com/calypr/funnel/util"
@@ -46,10 +45,10 @@ func NewSwift(conf *config.SwiftStorage) (*Swift, error) {
 	}
 
 	var chunkSize int64
-	if conf.ChunkSizeBytes < int64(100*units.MB) {
-		chunkSize = int64(500 * units.MB)
-	} else if conf.ChunkSizeBytes > int64(5*units.GB) {
-		chunkSize = int64(5 * units.GB)
+	if conf.ChunkSizeBytes < int64(100*1000*1000) {
+		chunkSize = int64(500 * 1000*1000)
+	} else if conf.ChunkSizeBytes > int64(5*1000*1000*1000) {
+		chunkSize = int64(5 * 1000*1000*1000)
 	} else {
 		chunkSize = conf.ChunkSizeBytes
 	}
@@ -202,7 +201,7 @@ func (sw *Swift) Put(ctx context.Context, url, path string) (*Object, error) {
 	var headers swift.Headers
 
 	fSize := fsutil.FileSize(path)
-	if fSize < int64(5*units.GB) {
+	if fSize < int64(5*1000*1000*1000) {
 		writer, err = sw.conn.ObjectCreate(ctx, u.bucket, u.path, checkHash, hash, contentType, headers)
 	} else {
 		writer, err = sw.conn.StaticLargeObjectCreateFile(ctx, &swift.LargeObjectOpts{

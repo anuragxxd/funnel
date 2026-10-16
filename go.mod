@@ -43,6 +43,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
+	github.com/k0kubun/pp v3.0.1+incompatible
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/logrusorgru/aurora/v4 v4.0.0
@@ -166,6 +167,7 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/k0kubun/colorstring v0.0.0-20150214042306-9440f1994b88 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect

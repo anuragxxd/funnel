@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"fmt"
+	"github.com/k0kubun/pp"
 
 	"github.com/calypr/funnel/tes"
 	"github.com/calypr/funnel/tests"
@@ -73,5 +73,5 @@ func TestMetrics(t *testing.T) {
 			}
 		}
 	}
-		fmt.Printf("%+v\n", met["funnel_tasks_state_count"].Metric)
+		pp.Println(met["funnel_tasks_state_count"].Metric)
 }

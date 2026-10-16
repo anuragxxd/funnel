@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/calypr/funnel/config"
@@ -25,9 +27,20 @@ import (
 // OpenStack Swift S3 API, etc). It uses the AWS S3 client configured with a
 // custom endpoint and path-style addressing.
 type GenericS3 struct {
-	client   *s3.Client
+	cfg      aws.Config
 	endpoint string
-	kmskeyId string
+	// baseURL is the endpoint URL with scheme, used as the SDK BaseEndpoint.
+	baseURL string
+	// pathStyle is true for S3-compatible stores; false for real AWS
+	// endpoints, which use virtual-host addressing.
+	pathStyle bool
+	region    string
+	// regionSet is true when the user explicitly configured a region.
+	regionSet bool
+	kmskeyId  string
+
+	once sync.Once
+	s3c  *s3.Client
 }
 
 // NewGenericS3 creates a new GenericS3 instance, given an endpoint URL
@@ -47,21 +60,12 @@ func NewGenericS3(conf *config.GenericS3Storage) (*GenericS3, error) {
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 	logger.Debug("generics3: connecting to endpoint", "endpoint", endpoint)
 
-	opts := []func(*s3.Options){
-		func(o *s3.Options) {
-			o.UsePathStyle = true
-			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-		},
-	}
-	if endpoint != "" {
-		opts = append(opts, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(schemeEndpoint(conf.Endpoint, endpoint))
-		})
-	}
+	pathStyle := endpoint != "" && !strings.Contains(endpoint, ".amazonaws.com")
+
 	loadOpts := []func(*awscfg.LoadOptions) error{
 		awscfg.WithRegion(region),
 	}
+	regionSet := conf.Region != ""
 	if conf.Key != "" && conf.Secret != "" {
 		loadOpts = append(loadOpts,
 			awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(conf.Key, conf.Secret, "")))
@@ -70,10 +74,71 @@ func NewGenericS3(conf *config.GenericS3Storage) (*GenericS3, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error creating generic s3 backend: %v", err)
 	}
+	if conf.Key == "" || conf.Secret == "" {
+		// No credentials configured: access anonymously (public buckets),
+		// matching the behavior of the previous minio-based client.
+		awsConfig.Credentials = aws.AnonymousCredentials{}
+	}
 
-	client := s3.NewFromConfig(awsConfig, opts...)
+	baseURL := ""
+	if endpoint != "" {
+		baseURL = schemeEndpoint(conf.Endpoint, endpoint)
+	}
 
-	return &GenericS3{client, endpoint + "/", conf.KmsKeyID}, nil
+	return &GenericS3{
+		cfg:       awsConfig,
+		endpoint:  endpoint + "/",
+		baseURL:   baseURL,
+		pathStyle: pathStyle,
+		region:    region,
+		regionSet: regionSet,
+		kmskeyId:  conf.KmsKeyID,
+	}, nil
+}
+
+// client lazily builds the S3 client, resolving the bucket region for AWS
+// endpoints on first use.
+func (s3b *GenericS3) client(ctx context.Context, bucket string) *s3.Client {
+	s3b.once.Do(func() {
+		region := s3b.region
+		if !s3b.pathStyle && !s3b.regionSet {
+			// AWS endpoint without a configured region: resolve the
+			// bucket's region so cross-region buckets don't redirect.
+			if r, err := s3b.bucketRegion(ctx, bucket); err == nil && r != "" {
+				region = r
+			}
+		}
+		opts := []func(*s3.Options){
+			func(o *s3.Options) {
+				o.UsePathStyle = s3b.pathStyle
+				o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+				o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+			},
+		}
+		if s3b.pathStyle && s3b.baseURL != "" {
+			// Custom (non-AWS) endpoint: always address it directly.
+			opts = append(opts, func(o *s3.Options) {
+				o.BaseEndpoint = aws.String(s3b.baseURL)
+			})
+		}
+		// For AWS endpoints the SDK builds the regional endpoint from the
+		// resolved region (virtual-host addressing), so no BaseEndpoint.
+		s3b.s3c = s3.NewFromConfig(s3b.cfg, append(opts, func(o *s3.Options) {
+			o.Region = region
+		})...)
+	})
+	return s3b.s3c
+}
+
+// bucketRegion resolves the region of an AWS bucket via the
+// X-Amz-Bucket-Region header returned on a HEAD bucket request.
+func (s3b *GenericS3) bucketRegion(ctx context.Context, bucket string) (string, error) {
+	client := s3.NewFromConfig(s3b.cfg, func(o *s3.Options) {
+		o.Region = "us-east-1"
+		o.Credentials = nil
+		o.UsePathStyle = false
+	})
+	return manager.GetBucketRegion(ctx, client, bucket)
 }
 
 // schemeEndpoint rebuilds a full endpoint URL (with scheme) from the raw
@@ -93,7 +158,7 @@ func (s3b *GenericS3) isDir(ctx context.Context, bucketName, objectName string) 
 	}
 
 	// List objects with the prefix to see if there are multiple keys with the given prefix
-	pages := s3.NewListObjectsV2Paginator(s3b.client, &s3.ListObjectsV2Input{
+	pages := s3.NewListObjectsV2Paginator(s3b.client(ctx, bucketName), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucketName),
 		Prefix: aws.String(objectName),
 	})
@@ -123,7 +188,7 @@ func (s3b *GenericS3) Stat(ctx context.Context, url string) (*Object, error) {
 	}
 
 	logger.Debug("genericS3: s3.client.HeadObject", "bucket", u.bucket, "path", u.path)
-	res, err := s3b.client.HeadObject(ctx, &s3.HeadObjectInput{
+	res, err := s3b.client(ctx, u.bucket).HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(u.bucket),
 		Key:    aws.String(u.path),
 	})
@@ -159,7 +224,7 @@ func (s3b *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 
 	// Recursively list all objects.
 	var objects []*Object
-	pages := s3.NewListObjectsV2Paginator(s3b.client, &s3.ListObjectsV2Input{
+	pages := s3.NewListObjectsV2Paginator(s3b.client(ctx, u.bucket), &s3.ListObjectsV2Input{
 		Bucket: aws.String(u.bucket),
 		Prefix: aws.String(u.path),
 	})
@@ -238,7 +303,7 @@ func (s3b *GenericS3) download(ctx context.Context, bucket, objectPath, filePath
 
 	logger.Debug("genericS3: downloading object", "bucket", bucket, "objectPath", objectPath, "filePath", filePath)
 	// Step 1: Get the object stream
-	res, err := s3b.client.GetObject(ctx, &s3.GetObjectInput{
+	res, err := s3b.client(ctx, bucket).GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(objectPath),
 	})
@@ -386,7 +451,7 @@ func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) 
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s3b.kmskeyId)
 	}
-	_, err = s3b.client.PutObject(ctx, in)
+	_, err = s3b.client(ctx, bucket).PutObject(ctx, in)
 	return err
 }
 
@@ -402,7 +467,7 @@ func (s3b *GenericS3) UnsupportedOperations(url string) UnsupportedOperations {
 	if err != nil {
 		return AllUnsupported(err)
 	}
-	_, err = s3b.client.HeadBucket(context.Background(), &s3.HeadBucketInput{
+	_, err = s3b.client(context.Background(), u.bucket).HeadBucket(context.Background(), &s3.HeadBucketInput{
 		Bucket: aws.String(u.bucket),
 	})
 	if err != nil {

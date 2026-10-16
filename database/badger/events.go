@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	badger "github.com/dgraph-io/badger/v2"
+	badger "github.com/dgraph-io/badger/v4"
 	"github.com/calypr/funnel/events"
 	"github.com/calypr/funnel/server"
 	"github.com/calypr/funnel/tes"

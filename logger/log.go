@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/logrusorgru/aurora"
+	"github.com/logrusorgru/aurora/v4"
 	"github.com/ohsu-comp-bio/funnel/util"
 	"github.com/sirupsen/logrus"
 )

@@ -53,7 +53,7 @@ require (
 	github.com/kr/pretty v0.3.1
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v4 v4.5.0
-	github.com/logrusorgru/aurora v2.0.3+incompatible
+	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/moby/moby/client v0.6.2
 	github.com/ncw/swift v1.0.53

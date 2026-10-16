@@ -5,9 +5,9 @@ import (
 	"os"
 
 	ui "github.com/gizak/termui"
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/compact"
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/config"
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/widgets"
+	"github.com/calypr/funnel/cmd/termdash/compact"
+	"github.com/calypr/funnel/cmd/termdash/config"
+	"github.com/calypr/funnel/cmd/termdash/widgets"
 	"github.com/spf13/cobra"
 )
 

@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	intern "github.com/ohsu-comp-bio/funnel/examples/internal"
+	intern "github.com/calypr/funnel/examples/internal"
 )
 
 var examples = buildExamples()

@@ -6,9 +6,9 @@ import (
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/plugins/proto"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/plugins/proto"
+	"github.com/calypr/funnel/tes"
 	"google.golang.org/grpc"
 )
 

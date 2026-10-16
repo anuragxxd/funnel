@@ -5,9 +5,9 @@ package termdash
 
 import (
 	ui "github.com/gizak/termui"
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/config"
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/expanded"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/cmd/termdash/config"
+	"github.com/calypr/funnel/cmd/termdash/expanded"
+	"github.com/calypr/funnel/tes"
 )
 
 func RedrawRows(clr bool) {

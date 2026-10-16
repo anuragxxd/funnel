@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ohsu-comp-bio/funnel/cmd/util"
+	"github.com/calypr/funnel/cmd/util"
 	"github.com/spf13/pflag"
 )
 

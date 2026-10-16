@@ -7,7 +7,7 @@
 package events
 
 import (
-	tes "github.com/ohsu-comp-bio/funnel/tes"
+	tes "github.com/calypr/funnel/tes"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -710,7 +710,7 @@ const file_events_events_proto_rawDesc = "" +
 	"\x0eTASK_RESOURCES\x10\x0f2I\n" +
 	"\fEventService\x129\n" +
 	"\n" +
-	"WriteEvent\x12\r.events.Event\x1a\x1a.events.WriteEventResponse\"\x00B(Z&github.com/ohsu-comp-bio/funnel/eventsb\x06proto3"
+	"WriteEvent\x12\r.events.Event\x1a\x1a.events.WriteEventResponse\"\x00B(Z&github.com/calypr/funnel/eventsb\x06proto3"
 
 var (
 	file_events_events_proto_rawDescOnce sync.Once

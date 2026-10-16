@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ohsu-comp-bio/funnel/tes"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/tes"
+	"github.com/calypr/funnel/util/fsutil"
 	proto "google.golang.org/protobuf/proto"
 )
 

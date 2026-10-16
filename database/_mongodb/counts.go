@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/globalsign/mgo/bson"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 )
 
 type stateCount struct {

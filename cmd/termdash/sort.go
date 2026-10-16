@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/config"
+	"github.com/calypr/funnel/cmd/termdash/config"
 )
 
 type sortMethod func(c1, c2 *TaskWidget) bool

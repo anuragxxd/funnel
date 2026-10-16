@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/tes"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

@@ -14,9 +14,9 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/encrypt"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/logger"
-	s3util "github.com/ohsu-comp-bio/funnel/util/s3"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/logger"
+	s3util "github.com/calypr/funnel/util/s3"
 )
 
 // GenericS3 provides access to an S3 object store.

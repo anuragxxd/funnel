@@ -10,8 +10,8 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/sortorder"
-	"github.com/ohsu-comp-bio/funnel/server"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/server"
+	"github.com/calypr/funnel/tes"
 )
 
 // Custom unmarshaller where unknown JSON properties do not cause an error.

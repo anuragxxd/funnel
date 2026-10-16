@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/util/ring"
+	"github.com/calypr/funnel/util/ring"
 	"golang.org/x/time/rate"
 )
 

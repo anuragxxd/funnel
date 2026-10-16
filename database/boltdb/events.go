@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ohsu-comp-bio/funnel/events"
-	"github.com/ohsu-comp-bio/funnel/server"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/events"
+	"github.com/calypr/funnel/server"
+	"github.com/calypr/funnel/tes"
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )

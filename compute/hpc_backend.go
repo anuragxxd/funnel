@@ -11,11 +11,11 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/events"
-	"github.com/ohsu-comp-bio/funnel/logger"
-	"github.com/ohsu-comp-bio/funnel/tes"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/events"
+	"github.com/calypr/funnel/logger"
+	"github.com/calypr/funnel/tes"
+	"github.com/calypr/funnel/util/fsutil"
 )
 
 // HPCBackend represents an HPCBackend such as HtCondor, Slurm, Grid Engine, etc.

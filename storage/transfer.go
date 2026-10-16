@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/gammazero/workerpool"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/util/fsutil"
 )
 
 // Transfer defines the interface of a single storage upload or download request.

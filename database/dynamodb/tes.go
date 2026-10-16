@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/ohsu-comp-bio/funnel/server"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/server"
+	"github.com/calypr/funnel/tes"
 )
 
 // GetTask gets a task, which describes a running task

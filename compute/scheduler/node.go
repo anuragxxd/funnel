@@ -5,10 +5,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/logger"
-	"github.com/ohsu-comp-bio/funnel/util"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/logger"
+	"github.com/calypr/funnel/util"
+	"github.com/calypr/funnel/util/fsutil"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

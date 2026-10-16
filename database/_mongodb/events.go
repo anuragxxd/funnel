@@ -7,9 +7,9 @@ import (
 
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
-	"github.com/ohsu-comp-bio/funnel/events"
-	"github.com/ohsu-comp-bio/funnel/tes"
-	"github.com/ohsu-comp-bio/funnel/util"
+	"github.com/calypr/funnel/events"
+	"github.com/calypr/funnel/tes"
+	"github.com/calypr/funnel/util"
 )
 
 // WriteEvent creates an event for the server to handle.

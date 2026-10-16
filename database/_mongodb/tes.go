@@ -7,7 +7,7 @@ import (
 
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 )
 
 var basicView = bson.M{

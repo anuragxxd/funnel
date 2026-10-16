@@ -8,8 +8,8 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/refresh"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/result"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/sortorder"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/tes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

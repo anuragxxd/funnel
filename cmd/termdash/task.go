@@ -1,8 +1,8 @@
 package termdash
 
 import (
-	"github.com/ohsu-comp-bio/funnel/cmd/termdash/compact"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/cmd/termdash/compact"
+	"github.com/calypr/funnel/tes"
 )
 
 type TaskWidget struct {

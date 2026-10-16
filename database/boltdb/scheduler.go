@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/tes"
 	bolt "go.etcd.io/bbolt"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

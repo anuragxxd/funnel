@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/events"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/events"
 )
 
 type stepWorker struct {

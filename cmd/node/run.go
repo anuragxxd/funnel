@@ -7,11 +7,11 @@ import (
 	"syscall"
 	"time"
 
-	workerCmd "github.com/ohsu-comp-bio/funnel/cmd/worker"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/logger"
-	"github.com/ohsu-comp-bio/funnel/util"
+	workerCmd "github.com/calypr/funnel/cmd/worker"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/logger"
+	"github.com/calypr/funnel/util"
 )
 
 // Run runs a node with the given config, blocking until the node exits.

@@ -11,9 +11,9 @@ import (
 
 	"github.com/alecthomas/units"
 	"github.com/ncw/swift/v2"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/util"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/util"
+	"github.com/calypr/funnel/util/fsutil"
 )
 
 const swiftProtocol = "swift://"

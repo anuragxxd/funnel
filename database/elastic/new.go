@@ -5,8 +5,8 @@ import (
 
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
 )
 
 var (

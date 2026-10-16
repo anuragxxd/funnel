@@ -7,8 +7,8 @@
 package proto
 
 import (
-	config "github.com/ohsu-comp-bio/funnel/config"
-	tes "github.com/ohsu-comp-bio/funnel/tes"
+	config "github.com/calypr/funnel/config"
+	tes "github.com/calypr/funnel/tes"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

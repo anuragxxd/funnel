@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/util"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/util"
 )
 
 // Postgres provides a PostgreSQL database server backend.

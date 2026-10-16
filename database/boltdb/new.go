@@ -3,9 +3,9 @@ package boltdb
 import (
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
-	"github.com/ohsu-comp-bio/funnel/util/fsutil"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
+	"github.com/calypr/funnel/util/fsutil"
 	bolt "go.etcd.io/bbolt"
 )
 

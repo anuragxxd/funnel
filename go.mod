@@ -1,4 +1,4 @@
-module github.com/ohsu-comp-bio/funnel
+module github.com/calypr/funnel
 
 go 1.27.0
 

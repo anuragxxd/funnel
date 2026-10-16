@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	ui "github.com/gizak/termui"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 )
 
 var displayInfo = []string{"id", "state", "name", "description", "tags"}

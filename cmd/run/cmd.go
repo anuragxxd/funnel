@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"os"
 
-	"github.com/ohsu-comp-bio/funnel/util/shellwords"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/util/shellwords"
+	"github.com/calypr/funnel/tes"
 	"github.com/spf13/cobra"
 )
 

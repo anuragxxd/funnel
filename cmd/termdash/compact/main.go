@@ -5,7 +5,7 @@ package compact
 
 import (
 	ui "github.com/gizak/termui"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 )
 
 type Compact struct {

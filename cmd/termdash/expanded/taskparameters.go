@@ -2,7 +2,7 @@ package expanded
 
 import (
 	ui "github.com/gizak/termui"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 )
 
 var inputInfo = []string{"name", "description", "url", "path", "type", "content"}

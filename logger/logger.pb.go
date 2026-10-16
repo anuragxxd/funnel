@@ -268,7 +268,7 @@ const file_logger_logger_proto_rawDesc = "" +
 	"JsonFormat\x128\n" +
 	"\n" +
 	"TextFormat\x18\x05 \x01(\v2\x18.logger.TextFormatConfigR\n" +
-	"TextFormatB(Z&github.com/ohsu-comp-bio/funnel/loggerb\x06proto3"
+	"TextFormatB(Z&github.com/calypr/funnel/loggerb\x06proto3"
 
 var (
 	file_logger_logger_proto_rawDescOnce sync.Once

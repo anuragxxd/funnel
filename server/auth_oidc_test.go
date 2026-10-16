@@ -17,7 +17,7 @@ import (
 
 	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
-	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/calypr/funnel/config"
 )
 
 func TestParseJwtSubjectValidatesOIDCTokens(t *testing.T) {

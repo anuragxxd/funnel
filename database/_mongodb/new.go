@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/globalsign/mgo"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
 )
 
 // MongoDB provides an MongoDB database server backend.

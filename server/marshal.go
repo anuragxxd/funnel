@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/tes"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -16,7 +16,7 @@ import (
 // - View_FULL: returns all fields
 //
 // This could be improved by updating the generated protobuf code to include the View field in the Task struct
-// Related discussion: https://github.com/ohsu-comp-bio/funnel/pull/716#discussion_r1375155983
+// Related discussion: https://github.com/calypr/funnel/pull/716#discussion_r1375155983
 type CustomMarshal struct {
 	m runtime.Marshaler
 }

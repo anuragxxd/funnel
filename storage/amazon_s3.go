@@ -16,9 +16,9 @@ import (
 	transfertypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
-	"github.com/ohsu-comp-bio/funnel/config"
-	util "github.com/ohsu-comp-bio/funnel/util/aws"
-	s3util "github.com/ohsu-comp-bio/funnel/util/s3"
+	"github.com/calypr/funnel/config"
+	util "github.com/calypr/funnel/util/aws"
+	s3util "github.com/calypr/funnel/util/s3"
 )
 
 // s3Protocol defines the s3 URL protocol

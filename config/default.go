@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
-	intern "github.com/ohsu-comp-bio/funnel/config/internal"
-	"github.com/ohsu-comp-bio/funnel/logger"
+	intern "github.com/calypr/funnel/config/internal"
+	"github.com/calypr/funnel/logger"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
 )
 

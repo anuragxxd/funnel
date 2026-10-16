@@ -17,7 +17,7 @@ import (
 	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v4/jwt"
-	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/calypr/funnel/config"
 	"golang.org/x/oauth2"
 )
 

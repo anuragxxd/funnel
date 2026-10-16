@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/config"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/config"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"

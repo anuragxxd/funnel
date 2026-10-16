@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
-	"github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/compute/scheduler"
+	"github.com/calypr/funnel/tes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

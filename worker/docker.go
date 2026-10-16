@@ -14,9 +14,9 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/ohsu-comp-bio/funnel/util/shellwords"
-	"github.com/ohsu-comp-bio/funnel/events"
-	tes "github.com/ohsu-comp-bio/funnel/tes"
+	"github.com/calypr/funnel/util/shellwords"
+	"github.com/calypr/funnel/events"
+	tes "github.com/calypr/funnel/tes"
 )
 
 // DockerCommand is responsible for configuring and running a docker container.

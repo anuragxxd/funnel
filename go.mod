@@ -28,7 +28,6 @@ require (
 	github.com/cenkalti/backoff/v7 v7.0.1
 	github.com/dgraph-io/badger/v2 v2.2007.4
 	github.com/elastic/go-elasticsearch/v8 v8.19.7
-	github.com/elazarl/go-bindata-assetfs v1.0.1
 	github.com/gammazero/workerpool v1.2.2
 	github.com/getkin/kin-openapi v0.150.0
 	github.com/gizak/termui v2.3.0+incompatible

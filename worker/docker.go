@@ -14,7 +14,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/google/shlex"
+	"github.com/ohsu-comp-bio/funnel/util/shellwords"
 	"github.com/ohsu-comp-bio/funnel/events"
 	tes "github.com/ohsu-comp-bio/funnel/tes"
 )
@@ -116,7 +116,7 @@ func (docker DockerCommand) executeCommand(ctx context.Context, commandTemplate 
 		return fmt.Errorf("failed to execute template for command: %w", err)
 	}
 
-	cmdParts, err := shlex.Split(cmdBuffer.String())
+	cmdParts, err := shellwords.Split(cmdBuffer.String())
 	if err != nil {
 		return fmt.Errorf("failed to parse command: %w", err)
 	}

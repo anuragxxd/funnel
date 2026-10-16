@@ -35,7 +35,6 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/go-test/deep v1.1.2
 	github.com/goccy/go-yaml v1.19.2
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
@@ -45,7 +44,6 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
-	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/kr/pretty v0.3.1
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v4 v4.5.0

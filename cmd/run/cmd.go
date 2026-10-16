@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"os"
 
-	"github.com/kballard/go-shellquote"
+	"github.com/ohsu-comp-bio/funnel/util/shellwords"
 	"github.com/ohsu-comp-bio/funnel/tes"
 	"github.com/spf13/cobra"
 )
@@ -34,9 +34,9 @@ func init() {
 	Cmd.SetUsageTemplate(usage)
 }
 
-// ParseString calls shellquote.Split(s) and passes those args to Parse().
+// ParseString calls shellwords.Split(s) and passes those args to Parse().
 func ParseString(s string) ([]*tes.Task, error) {
-	args, err := shellquote.Split(s)
+	args, err := shellwords.Split(s)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func scatter(base flagVals) []flagVals {
 		scanner := bufio.NewScanner(fh)
 		for scanner.Scan() {
 			// Per-scatter flags
-			sp, _ := shellquote.Split(scanner.Text())
+			sp, _ := shellwords.Split(scanner.Text())
 			tv := base
 			parseTaskArgs(&tv, sp)
 			// Parse scatter file flags into new flagVals

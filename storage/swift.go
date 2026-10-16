@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
-	"github.com/ncw/swift"
+	"github.com/ncw/swift/v2"
 	"github.com/ohsu-comp-bio/funnel/config"
 	"github.com/ohsu-comp-bio/funnel/util"
 	"github.com/ohsu-comp-bio/funnel/util/fsutil"
@@ -102,7 +102,7 @@ func (sw *Swift) Stat(ctx context.Context, url string) (*Object, error) {
 		return nil, err
 	}
 
-	info, _, err := sw.conn.Object(u.bucket, u.path)
+	info, _, err := sw.conn.Object(ctx, u.bucket, u.path)
 	if err != nil {
 		return nil, &swiftError{"getting object info", url, err}
 	}
@@ -122,7 +122,7 @@ func (sw *Swift) List(ctx context.Context, url string) ([]*Object, error) {
 		return nil, err
 	}
 
-	objs, err := sw.conn.ObjectsAll(u.bucket, &swift.ObjectsOpts{
+	objs, err := sw.conn.ObjectsAll(ctx, u.bucket, &swift.ObjectsOpts{
 		Prefix: u.path,
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func (sw *Swift) Get(ctx context.Context, url, path string) (*Object, error) {
 		return nil, err
 	}
 
-	f, _, err := sw.conn.ObjectOpen(u.bucket, u.path, checkHash, headers)
+	f, _, err := sw.conn.ObjectOpen(ctx, u.bucket, u.path, checkHash, headers)
 	if err != nil {
 		return nil, &swiftError{"initiating download", url, err}
 	}
@@ -203,9 +203,9 @@ func (sw *Swift) Put(ctx context.Context, url, path string) (*Object, error) {
 
 	fSize := fsutil.FileSize(path)
 	if fSize < int64(5*units.GB) {
-		writer, err = sw.conn.ObjectCreate(u.bucket, u.path, checkHash, hash, contentType, headers)
+		writer, err = sw.conn.ObjectCreate(ctx, u.bucket, u.path, checkHash, hash, contentType, headers)
 	} else {
-		writer, err = sw.conn.StaticLargeObjectCreateFile(&swift.LargeObjectOpts{
+		writer, err = sw.conn.StaticLargeObjectCreateFile(ctx, &swift.LargeObjectOpts{
 			Container:  u.bucket,
 			ObjectName: u.path,
 			CheckHash:  checkHash,
@@ -246,7 +246,7 @@ func (sw *Swift) UnsupportedOperations(url string) UnsupportedOperations {
 	if err != nil {
 		return AllUnsupported(err)
 	}
-	_, _, err = sw.conn.Container(u.bucket)
+	_, _, err = sw.conn.Container(context.Background(), u.bucket)
 	if err != nil {
 		return AllUnsupported(&swiftError{"looking for bucket", url, err})
 	}

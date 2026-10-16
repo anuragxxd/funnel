@@ -56,7 +56,7 @@ require (
 	github.com/logrusorgru/aurora/v4 v4.0.0
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/moby/moby/client v0.6.2
-	github.com/ncw/swift v1.0.53
+	github.com/ncw/swift/v2 v2.0.5
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.72.1
 	github.com/rs/xid v1.6.0

@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/golang/gddo/httputil"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/ohsu-comp-bio/funnel/compute/scheduler"
 	"github.com/ohsu-comp-bio/funnel/config"
@@ -347,7 +346,7 @@ func negotiate(req *http.Request) string {
 	// may be served at the same path.
 	// In Go 1.10 we'll be able to move to a core library for this,
 	// https://github.com/golang/go/issues/19307
-	switch httputil.NegotiateContentType(req, []string{"text/*", "text/html"}, "text/*") {
+	switch negotiateContentType(req, []string{"text/*", "text/html"}, "text/*") {
 	case "text/html":
 		return "html"
 	default:

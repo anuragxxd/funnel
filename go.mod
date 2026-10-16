@@ -35,7 +35,6 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/go-test/deep v1.1.2
 	github.com/goccy/go-yaml v1.19.2
-	github.com/golang/gddo v0.0.0-20210115222349-20d68f94ee1f
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510
 	github.com/google/uuid v1.6.0
 	github.com/googleapis/gax-go/v2 v2.26.2

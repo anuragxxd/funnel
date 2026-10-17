@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/google/uuid"
 	"github.com/calypr/funnel/config"
+	"github.com/google/uuid"
 	pscpu "github.com/shirou/gopsutil/v4/cpu"
 	psdisk "github.com/shirou/gopsutil/v4/disk"
 	psmem "github.com/shirou/gopsutil/v4/mem"

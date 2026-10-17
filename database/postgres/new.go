@@ -6,11 +6,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/calypr/funnel/compute/scheduler"
 	"github.com/calypr/funnel/config"
 	"github.com/calypr/funnel/util"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Postgres provides a PostgreSQL database server backend.

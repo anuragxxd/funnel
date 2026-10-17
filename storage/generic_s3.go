@@ -192,11 +192,8 @@ func (s3b *GenericS3) isDir(ctx context.Context, bucketName, objectName string) 
 	}
 	// The requested key wins over sibling keys sharing the prefix: an
 	// existing object is a file even when sample.bam.bai sits next to
-	// sample.bam.
+	// sample.bam. If no objects share the prefix, it's a file too.
 	return !seenExact && seenPrefix, nil
-
-	// If no objects share the prefix or the objectName exactly matches a key, it's considered a file
-	return false, nil
 }
 
 // Stat returns information about the object at the given storage URL.

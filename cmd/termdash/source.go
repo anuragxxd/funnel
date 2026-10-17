@@ -27,14 +27,18 @@ func NewTaskSource(tesHTTPServerAddress string, pageSize int32) (*TaskSource, er
 	return &TaskSource{client: cli, pageSize: pageSize}, nil
 }
 
-// listTasks fetches a raw page of tasks, updating pagination tokens.
+// listTasks fetches a raw page of tasks, updating pagination tokens. Token
+// reads and writes hold the lock so a slow refresh cannot clobber page state
+// chosen by navigation during the fetch.
 func (ts *TaskSource) listTasks(previous, next bool) ([]*tes.Task, error) {
+	ts.lock.Lock()
+	token := ts.nPage
 	if next && !previous {
-		if ts.nPage != "" {
+		if token != "" {
 			if ts.cPage != "" {
 				ts.pPage = append(ts.pPage, ts.cPage)
 			}
-			ts.cPage = ts.nPage
+			ts.cPage = token
 		}
 	} else if previous && !next {
 		if len(ts.pPage) > 0 {
@@ -44,17 +48,21 @@ func (ts *TaskSource) listTasks(previous, next bool) ([]*tes.Task, error) {
 			ts.cPage = ""
 		}
 	}
+	pageToken := ts.cPage
+	ts.lock.Unlock()
 
 	resp, err := ts.client.ListTasks(context.Background(), &tes.ListTasksRequest{
 		View:      tes.View_BASIC.String(),
 		PageSize:  ts.pageSize,
-		PageToken: ts.cPage,
+		PageToken: pageToken,
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	ts.lock.Lock()
 	ts.nPage = resp.NextPageToken
+	ts.lock.Unlock()
 	return resp.Tasks, nil
 }
 

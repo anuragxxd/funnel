@@ -174,18 +174,26 @@ func (s3b *GenericS3) isDir(ctx context.Context, bucketName, objectName string) 
 		Bucket: aws.String(bucketName),
 		Prefix: aws.String(objectName),
 	})
+	seenExact := false
+	seenPrefix := false
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
 			return false, err
 		}
 		for _, obj := range page.Contents {
-			// If any object's key starts with the objectName and is not equal, it's a directory
-			if strings.HasPrefix(aws.ToString(obj.Key), objectName) && obj.Key != aws.String(objectName) {
-				return true, nil
+			key := aws.ToString(obj.Key)
+			if key == objectName {
+				seenExact = true
+			} else if strings.HasPrefix(key, objectName) {
+				seenPrefix = true
 			}
 		}
 	}
+	// The requested key wins over sibling keys sharing the prefix: an
+	// existing object is a file even when sample.bam.bai sits next to
+	// sample.bam.
+	return !seenExact && seenPrefix, nil
 
 	// If no objects share the prefix or the objectName exactly matches a key, it's considered a file
 	return false, nil
@@ -483,7 +491,9 @@ func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) 
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s3b.kmskeyId)
 	}
-	out, err := s3b.client(ctx, bucket).PutObject(ctx, in)
+	// Uploader switches to multipart above the 5 GiB single-request
+	// PutObject limit, matching the replaced minio client's behavior.
+	out, err := manager.NewUploader(s3b.client(ctx, bucket)).Upload(ctx, in)
 	if err != nil {
 		return 0, "", err
 	}

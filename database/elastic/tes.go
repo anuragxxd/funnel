@@ -49,7 +49,11 @@ func (es *Elastic) getTask(ctx context.Context, req *tes.GetTaskRequest) (*tes.T
 
 	if userInfo := server.GetUser(ctx); !userInfo.CanSeeAllTasks() {
 		partial := TaskOwner{}
-		_ = json.Unmarshal(res.Source_, &partial)
+		if err := json.Unmarshal(res.Source_, &partial); err != nil {
+			// An undecodable owner must not silently pass or fail the
+			// authorization check below.
+			return nil, "", "", fmt.Errorf("elastic get task owner: %w", err)
+		}
 		if !userInfo.IsAccessible(partial.Owner) {
 			return nil, "", "", tes.ErrNotPermitted
 		}

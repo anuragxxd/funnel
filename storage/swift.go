@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ncw/swift/v2"
 	"github.com/calypr/funnel/config"
 	"github.com/calypr/funnel/util"
 	"github.com/calypr/funnel/util/fsutil"
+	"github.com/ncw/swift/v2"
 )
 
 const swiftProtocol = "swift://"
@@ -46,9 +46,9 @@ func NewSwift(conf *config.SwiftStorage) (*Swift, error) {
 
 	var chunkSize int64
 	if conf.ChunkSizeBytes < int64(100*1000*1000) {
-		chunkSize = int64(500 * 1000*1000)
+		chunkSize = int64(500 * 1000 * 1000)
 	} else if conf.ChunkSizeBytes > int64(5*1000*1000*1000) {
-		chunkSize = int64(5 * 1000*1000*1000)
+		chunkSize = int64(5 * 1000 * 1000 * 1000)
 	} else {
 		chunkSize = conf.ChunkSizeBytes
 	}

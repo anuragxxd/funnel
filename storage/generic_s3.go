@@ -102,6 +102,12 @@ func NewGenericS3(conf *config.GenericS3Storage) (*GenericS3, error) {
 	}, nil
 }
 
+// unquoteETag strips the surrounding double quotes the S3 API puts around
+// ETag values (the previous minio-based client returned them unquoted).
+func unquoteETag(etag string) string {
+	return strings.Trim(etag, `"`)
+}
+
 // schemeEndpoint rebuilds a full endpoint URL (with scheme) from the raw
 // configured endpoint and the parsed host.
 func schemeEndpoint(rawEndpoint, host string) string {
@@ -222,7 +228,7 @@ func (s3b *GenericS3) Stat(ctx context.Context, url string) (*Object, error) {
 	return &Object{
 		URL:          url,
 		Name:         u.path,
-		ETag:         aws.ToString(res.ETag),
+		ETag:         unquoteETag(aws.ToString(res.ETag)),
 		LastModified: aws.ToTime(res.LastModified),
 		Size:         aws.ToInt64(res.ContentLength),
 	}, nil
@@ -242,6 +248,18 @@ func (s3b *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 		return nil, err
 	}
 
+	// Preserve endpoint-qualified URLs (e.g. "s3://host:port/bucket/key")
+	// by building result URLs from the requested URL's base.
+	base := url
+	if u.path != "" {
+		if !strings.HasSuffix(base, u.path) {
+			return nil, fmt.Errorf("genericS3: listing URL %q does not end with parsed path %q", url, u.path)
+		}
+		base = strings.TrimSuffix(base, u.path)
+	} else if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+
 	// Recursively list all objects.
 	var objects []*Object
 	pages := s3.NewListObjectsV2Paginator(s3b.client(ctx, u.bucket), &s3.ListObjectsV2Input{
@@ -254,14 +272,18 @@ func (s3b *GenericS3) List(ctx context.Context, url string) ([]*Object, error) {
 			return nil, err
 		}
 		for _, info := range page.Contents {
+			key := aws.ToString(info.Key)
+			if !strings.HasPrefix(key, u.path) {
+				continue
+			}
 			// check if key represents a directory
-			if strings.HasSuffix(aws.ToString(info.Key), "/") {
+			if strings.HasSuffix(key, "/") {
 				continue
 			}
 			objects = append(objects, &Object{
-				URL:          "s3://" + u.bucket + "/" + aws.ToString(info.Key),
-				Name:         aws.ToString(info.Key),
-				ETag:         aws.ToString(info.ETag),
+				URL:          base + key,
+				Name:         key,
+				ETag:         unquoteETag(aws.ToString(info.ETag)),
 				LastModified: aws.ToTime(info.LastModified),
 				Size:         aws.ToInt64(info.Size),
 			})
@@ -414,7 +436,7 @@ func (s3b *GenericS3) Put(ctx context.Context, url, path string) (*Object, error
 					return err
 				}
 				uploadPath := filepath.ToSlash(filepath.Join(u.path, relativePath))
-				size, err := s3b.upload(ctx, u.bucket, uploadPath, filePath)
+				size, _, err := s3b.upload(ctx, u.bucket, uploadPath, filePath)
 				if err != nil {
 					return fmt.Errorf("genericS3: putting nested object %s: %w", uploadPath, err)
 				}
@@ -427,22 +449,29 @@ func (s3b *GenericS3) Put(ctx context.Context, url, path string) (*Object, error
 		}
 		return obj, nil
 	}
-	if _, err := s3b.upload(ctx, u.bucket, u.path, path); err != nil {
+	size, etag, err := s3b.upload(ctx, u.bucket, u.path, path)
+	if err != nil {
 		return nil, fmt.Errorf("genericS3: putting object %s: %w", url, err)
 	}
-	return s3b.Stat(ctx, url)
+	return &Object{URL: url, Name: u.path, ETag: etag, Size: size, LastModified: fileInfo.ModTime()}, nil
 }
 
 // upload copies a local file to the bucket at the given key, returning the
-// size of the uploaded object.
-func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) (int64, error) {
+// size (reported from the local file, without inspecting remote state) and
+// the ETag from the upload response.
+func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) (int64, string, error) {
 	logger := logger.NewLogger("GenericS3", logger.DefaultConfig())
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return 0, "", err
+	}
 
 	in := &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
@@ -456,18 +485,9 @@ func (s3b *GenericS3) upload(ctx context.Context, bucket, key, filePath string) 
 	}
 	out, err := s3b.client(ctx, bucket).PutObject(ctx, in)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	// Determine the uploaded size via the ETag-tagged HEAD request.
-	res, err := s3b.client(ctx, bucket).HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket:  aws.String(bucket),
-		Key:     aws.String(key),
-		IfMatch: out.ETag,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return aws.ToInt64(res.ContentLength), nil
+	return info.Size(), unquoteETag(aws.ToString(out.ETag)), nil
 }
 
 // Join joins the given URL with the given subpath.

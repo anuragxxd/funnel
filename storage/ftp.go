@@ -10,9 +10,9 @@ import (
 	pathlib "path"
 	"strings"
 
-	"github.com/jlaffaye/ftp"
 	"github.com/calypr/funnel/config"
 	"github.com/calypr/funnel/util/fsutil"
+	"github.com/jlaffaye/ftp"
 )
 
 // FTP provides read access to public URLs.

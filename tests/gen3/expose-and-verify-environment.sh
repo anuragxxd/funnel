@@ -116,3 +116,8 @@ curl --fail --silent --show-error --location \
   https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_expose_kind_cluster.sh \
   --output "$setup_dir/ci_expose_kind_cluster.sh"
 bash "$setup_dir/ci_expose_kind_cluster.sh"
+
+# Pytest worker crashes discard captured task logs. Keep a bounded independent
+# sample in the log that the reusable workflow prints even when a worker dies.
+nohup bash "$GITHUB_WORKSPACE/tests/gen3/collect-task-diagnostics.sh" \
+  >>"$GITHUB_WORKSPACE/logs/gh_action_logs.txt" 2>&1 </dev/null &

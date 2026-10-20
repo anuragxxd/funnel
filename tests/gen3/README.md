@@ -16,5 +16,6 @@ different image contents.
 
 When upgrading, copy the selected upstream manifests with `crane copy`, verify
 that `crane digest` returns the same digest for each mirror, and update the chart
-version and image references together in `setup-environment.sh`. Verify anonymous
-mirror pulls before changing the workflow's pinned setup-script commit.
+version and image references together in `csi-images.yaml` and both Kubernetes
+workflows. Pin `setup-environment.sh` to the commit containing those values. Verify
+anonymous mirror pulls before changing the Gen3 workflow's pinned setup-script commit.

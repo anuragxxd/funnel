@@ -1,5 +1,17 @@
-The Gen3 check runs the upstream test suite against a two-node Kind cluster,
-MinIO, and the real Mountpoint S3 CSI driver. Its setup script pins CSI chart
+The Gen3 check builds the checked-out commit from a `git archive` snapshot while
+starting a two-node Kind cluster. It imports that image into both nodes and uses
+a Helm post-renderer to select it for the Funnel server and workers with pulls
+disabled. Before testing, it checks the running server image against the imported
+image identity and records the result in `logs/gen3-image-identity.json`.
+
+This avoids waiting for the separate multi-architecture Quay publishing job.
+The upstream Helm helper writes an unused nested image override for Funnel, so
+the post-renderer also prevents accidentally testing `cdis/funnel:main-gen3`.
+The build, cluster setup, and import durations are printed separately; the total
+CI improvement must be measured on hosted runs.
+
+The upstream test suite still uses MinIO and the real Mountpoint S3 CSI driver.
+The setup script pins CSI chart
 2.8.0 and uses Linux/amd64 images mirrored in `quay.io/ohsu-comp-bio/funnel`
 under `ci-csi-*` tags. GitHub-hosted runners exhausted ECR's anonymous data
 allowance, so pulling directly from ECR failed before tests could start.
@@ -17,5 +29,6 @@ different image contents.
 When upgrading, copy the selected upstream manifests with `crane copy`, verify
 that `crane digest` returns the same digest for each mirror, and update the chart
 version and image references together in `csi-images.yaml` and both Kubernetes
-workflows. Pin `setup-environment.sh` to the commit containing those values. Verify
-anonymous mirror pulls before changing the Gen3 workflow's pinned setup-script commit.
+workflows. Pin `setup-environment.sh` to the commit containing those values.
+Verify anonymous mirror pulls before updating the references. The workflow loads
+the setup scripts from its own commit so the tested scripts and source agree.

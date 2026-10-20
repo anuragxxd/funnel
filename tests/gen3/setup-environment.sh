@@ -29,6 +29,16 @@ curl --fail --silent --show-error --location \
   https://raw.githubusercontent.com/calypr/funnel/fb82e812aa21ce680f553b9170092ed5fb2045f4/tests/gen3/csi-images.yaml \
   --output "$setup_dir/csi-images.yaml"
 
+: "${FUNNEL_CI_IMAGE_REF:?candidate image must be built and loaded before Gen3 setup}"
+: "${FUNNEL_CI_IMAGE_ID:?candidate image identity must be recorded before Gen3 setup}"
+
+candidate_image_id=$(docker image inspect "$FUNNEL_CI_IMAGE_REF" --format '{{.Id}}')
+candidate_revision=$(docker image inspect "$FUNNEL_CI_IMAGE_REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+if [[ "$candidate_image_id" != "$FUNNEL_CI_IMAGE_ID" || "$candidate_revision" != "$FUNNEL_CI_SOURCE_SHA" ]]; then
+  printf 'candidate image identity does not match the checked-out Funnel source\n' >&2
+  exit 1
+fi
+
 python3 - "$setup_script" "$setup_dir/csi-images.yaml" <<'PY'
 from pathlib import Path
 import shlex
@@ -44,6 +54,33 @@ PY
 
 bash "$setup_script"
 
+setup_ci_env="$GITHUB_WORKSPACE/gen3-code-vigil/gen3-integration-tests/gen3_ci/scripts/setup_ci_env.sh"
+python3 - "$setup_ci_env" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text()
+renderer = ' --post-renderer "$GITHUB_WORKSPACE/tests/gen3/gen3-post-renderer.sh"'
+lines = source.splitlines(keepends=True)
+targets = [
+    index
+    for index, line in enumerate(lines)
+    if "helm upgrade --install ${namespace} gen3/gen3 " in line
+]
+if len(targets) != 1:
+    raise SystemExit("The Gen3 setup helper changed its default Helm install command")
+line = lines[targets[0]]
+if renderer.strip() in line:
+    raise SystemExit("The Gen3 post-renderer is already present in the Helm command")
+marker = " --debug; then"
+if line.count(marker) != 1:
+    raise SystemExit("The Gen3 Helm command changed its debug/install terminator")
+lines[targets[0]] = line.replace(marker, renderer + marker)
+path.write_text("".join(lines))
+PY
+
 if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf 'SKIP_QUAY_BUILD=true\n' >> "$GITHUB_ENV"
   printf 'PYTEST_ADDOPTS=%s\n' "${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }--max-worker-restart=0" >> "$GITHUB_ENV"
 fi

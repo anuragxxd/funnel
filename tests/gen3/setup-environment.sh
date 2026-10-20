@@ -55,13 +55,19 @@ PY
 bash "$setup_script"
 
 setup_ci_env="$GITHUB_WORKSPACE/gen3-code-vigil/gen3-integration-tests/gen3_ci/scripts/setup_ci_env.sh"
-python3 - "$setup_ci_env" <<'PY'
+renderer="$GITHUB_WORKSPACE/tests/gen3/gen3-post-renderer.sh"
+if [[ "$(helm version --template '{{.Version}}')" == v4.* ]]; then
+  helm plugin install "$GITHUB_WORKSPACE/tests/gen3"
+  renderer=funnel-ci-image
+fi
+python3 - "$setup_ci_env" "$renderer" <<'PY'
 from pathlib import Path
+import shlex
 import sys
 
 path = Path(sys.argv[1])
 source = path.read_text()
-renderer = ' --post-renderer "$GITHUB_WORKSPACE/tests/gen3/gen3-post-renderer.sh"'
+renderer = " --post-renderer " + shlex.quote(sys.argv[2])
 lines = source.splitlines(keepends=True)
 targets = [
     index

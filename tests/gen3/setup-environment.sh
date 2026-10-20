@@ -25,9 +25,25 @@ curl --fail --silent --show-error --location \
   https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_override_config_and_start_minio.sh \
   --output "$setup_script"
 
-# The chart and preloaded images must move together.
-python3 - "$setup_script" <<'PY'
+# The mirror preserves the upstream Linux/amd64 manifest digests.
+cat > "$setup_dir/csi-images.yaml" <<'YAML'
+image:
+  repository: quay.io/ohsu-comp-bio/funnel
+  tag: "ci-csi-driver-v2.8.0-linux-amd64-484def4a3b2e@sha256:484def4a3b2eec778ebae1c1574e2b8685df68d316d489fb7dc8d8bef814cb84"
+sidecars:
+  nodeDriverRegistrar:
+    image:
+      repository: quay.io/ohsu-comp-bio/funnel
+      tag: "ci-csi-registrar-v2.17.0-eksbuild.5-linux-amd64-aa84e8d445a2@sha256:aa84e8d445a27744f21d4eb90dc2810e681e1fe4681f0ec60dd0db9454d4aef2"
+  livenessProbe:
+    image:
+      repository: quay.io/ohsu-comp-bio/funnel
+      tag: "ci-csi-liveness-v2.19.0-eksbuild.5-linux-amd64-6bc3e10863a8@sha256:6bc3e10863a825c6d5c48492bce8c4be4a6582aa77289975bccd17ab164590ed"
+YAML
+
+python3 - "$setup_script" "$setup_dir/csi-images.yaml" <<'PY'
 from pathlib import Path
+import shlex
 import sys
 
 path = Path(sys.argv[1])
@@ -35,50 +51,8 @@ source = path.read_text()
 install = "helm upgrade --install aws-mountpoint-s3-csi-driver --namespace kube-system aws-mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver -f values-kind.yaml"
 if source.count(install) != 1:
     raise SystemExit("The pinned upstream CSI install command changed")
-path.write_text(source.replace(install, install + " --version 2.8.0"))
+path.write_text(source.replace(install, install + " --version 2.8.0 -f " + shlex.quote(sys.argv[2])))
 PY
-
-# Pull through host HTTP before the nodes request these images from ECR.
-curl --fail --silent --show-error --location --retry 3 \
-  https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz \
-  --output "$setup_dir/crane.tar.gz"
-printf '%s  %s\n' \
-  0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 \
-  "$setup_dir/crane.tar.gz" | sha256sum --check
-tar -xzf "$setup_dir/crane.tar.gz" -C "$setup_dir" crane
-mkdir "$setup_dir/docker"
-
-nodes=$(kind get nodes --name kind-cluster)
-[[ -n "$nodes" ]] || { echo "Kind cluster has no nodes" >&2; exit 1; }
-while read -r image digest; do
-  repository=${image%:*}
-  archive="$setup_dir/image.tar"
-  for attempt in 1 2 3; do
-    if DOCKER_CONFIG="$setup_dir/docker" "$setup_dir/crane" pull \
-      --platform linux/amd64 "$repository@$digest" "$archive"; then
-      break
-    fi
-    if (( attempt == 3 )); then
-      echo "Failed to preload $image after $attempt attempts" >&2
-      exit 1
-    fi
-    sleep "$((attempt * 2))"
-  done
-
-  while read -r node; do
-    # Kind 0.23's loader cannot discover containerd 2's snapshotter.
-    docker exec -i "$node" ctr --namespace k8s.io images import \
-      --snapshotter overlayfs - < "$archive"
-    # Crane gives digest-only pulls this placeholder tag in Docker archives.
-    docker exec "$node" ctr --namespace k8s.io images tag --force \
-      "$repository:i-was-a-digest" "$image"
-  done <<< "$nodes"
-  rm "$archive"
-done <<'IMAGES'
-public.ecr.aws/mountpoint-s3-csi-driver/aws-mountpoint-s3-csi-driver:v2.8.0 sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526
-public.ecr.aws/csi-components/csi-node-driver-registrar:v2.17.0-eksbuild.5 sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda
-public.ecr.aws/csi-components/livenessprobe:v2.19.0-eksbuild.5 sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3
-IMAGES
 
 bash "$setup_script"
 

@@ -31,11 +31,20 @@ curl --fail --silent --show-error --location \
 
 : "${FUNNEL_CI_IMAGE_REF:?candidate image must be built and loaded before Gen3 setup}"
 : "${FUNNEL_CI_IMAGE_ID:?candidate image identity must be recorded before Gen3 setup}"
+: "${FUNNEL_CI_PLUGIN_IMAGE_REF:?Gen3 plugin image must be built and loaded before Gen3 setup}"
+: "${FUNNEL_CI_PLUGIN_IMAGE_ID:?Gen3 plugin image identity must be recorded before Gen3 setup}"
+: "${FUNNEL_CI_PLUGIN_SOURCE_SHA:?Gen3 plugin source commit must be recorded before setup}"
 
 candidate_image_id=$(docker image inspect "$FUNNEL_CI_IMAGE_REF" --format '{{.Id}}')
 candidate_revision=$(docker image inspect "$FUNNEL_CI_IMAGE_REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
 if [[ "$candidate_image_id" != "$FUNNEL_CI_IMAGE_ID" || "$candidate_revision" != "$FUNNEL_CI_SOURCE_SHA" ]]; then
   printf 'candidate image identity does not match the checked-out Funnel source\n' >&2
+  exit 1
+fi
+plugin_image_id=$(docker image inspect "$FUNNEL_CI_PLUGIN_IMAGE_REF" --format '{{.Id}}')
+plugin_revision=$(docker image inspect "$FUNNEL_CI_PLUGIN_IMAGE_REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+if [[ "$plugin_image_id" != "$FUNNEL_CI_PLUGIN_IMAGE_ID" || "$plugin_revision" != "$FUNNEL_CI_PLUGIN_SOURCE_SHA" ]]; then
+  printf 'Gen3 plugin image identity does not match the pinned plugin source\n' >&2
   exit 1
 fi
 

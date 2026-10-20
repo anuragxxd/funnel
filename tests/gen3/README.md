@@ -10,6 +10,14 @@ the post-renderer also prevents accidentally testing `cdis/funnel:main-gen3`.
 The build, cluster setup, and import durations are printed separately; the total
 CI improvement must be measured on hosted runs.
 
+The Gen3 authorizer plugin is built from the pinned
+[`funnel-gen3-plugin` commit `eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3`](https://github.com/calypr/funnel-gen3-plugin/commit/eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3).
+CI uses the same Funnel builder stage and module source as the candidate image,
+then imports the plugin image into both Kind nodes. The post-renderer selects it
+for the `plugin` init container with pulls disabled, and the setup check records
+the plugin source commit and verifies the running init-container image ID.
+The plugin override stays optional for other users of this renderer.
+
 The upstream test suite still uses MinIO and the real Mountpoint S3 CSI driver.
 The setup script pins CSI chart
 2.8.0 and uses Linux/amd64 images mirrored in `quay.io/ohsu-comp-bio/funnel`

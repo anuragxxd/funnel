@@ -3,6 +3,7 @@ set -u
 
 : "${NAMESPACE:?}"
 namespace="workflow-pods-$NAMESPACE"
+printf 'Gen3 task diagnostics collector started for %s\n' "$namespace"
 
 for ((sample = 0; sample < 40; sample++)); do
   sleep 30

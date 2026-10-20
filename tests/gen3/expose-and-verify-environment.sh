@@ -119,5 +119,9 @@ bash "$setup_dir/ci_expose_kind_cluster.sh"
 
 # Pytest worker crashes discard captured task logs. Keep a bounded independent
 # sample in the log that the reusable workflow prints even when a worker dies.
+: "${WORKING_DIR:?integration suite working directory is required}"
+diagnostics_log="$GITHUB_WORKSPACE/$WORKING_DIR/logs/gh_action_logs.txt"
+mkdir -p "$(dirname "$diagnostics_log")"
 nohup bash "$GITHUB_WORKSPACE/tests/gen3/collect-task-diagnostics.sh" \
-  >>"$GITHUB_WORKSPACE/logs/gh_action_logs.txt" 2>&1 </dev/null &
+  >>"$diagnostics_log" 2>&1 </dev/null &
+printf 'Gen3 task diagnostics started as PID %s in %s\n' "$!" "$diagnostics_log"

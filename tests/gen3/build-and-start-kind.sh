@@ -93,7 +93,7 @@ for node in kind-cluster-control-plane kind-cluster-worker; do
     printf 'candidate image was not imported into Kind node %s\n' "$node" >&2
     exit 1
   fi
-  digest=$(docker exec "$node" ctr --namespace k8s.io images ls | awk -v image="$candidate_image" '$1 == image { print $3; exit }')
+  digest=$(docker exec "$node" ctr --namespace k8s.io images ls | awk -v image="$candidate_image" '$1 == image { digest = $3 } END { print digest }')
   config_id=$(docker exec "$node" crictl inspecti "$candidate_image" | jq -er '.status.id')
   node_digests+=("$digest")
   node_config_ids+=("$config_id")

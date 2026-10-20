@@ -20,7 +20,7 @@ for node in kind-cluster-control-plane kind-cluster-worker; do
     printf 'candidate image is missing from Kind node %s\n' "$node" >&2
     exit 1
   fi
-  digest=$(docker exec "$node" ctr --namespace k8s.io images ls | awk -v image="$FUNNEL_CI_IMAGE_REF" '$1 == image { print $3; exit }')
+  digest=$(docker exec "$node" ctr --namespace k8s.io images ls | awk -v image="$FUNNEL_CI_IMAGE_REF" '$1 == image { digest = $3 } END { print digest }')
   printf 'loaded_node=%s image=%s digest=%s\n' "$node" "$FUNNEL_CI_IMAGE_REF" "$digest"
 done
 

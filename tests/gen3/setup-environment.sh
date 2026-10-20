@@ -24,3 +24,7 @@ curl --fail --silent --show-error --location \
   https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_override_config_and_start_minio.sh \
   --output "$setup_script"
 bash "$setup_script"
+
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf 'PYTEST_ADDOPTS=%s\n' "${PYTEST_ADDOPTS:+$PYTEST_ADDOPTS }--max-worker-restart=0" >> "$GITHUB_ENV"
+fi

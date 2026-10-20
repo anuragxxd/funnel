@@ -1,0 +1,37 @@
+# Gen3 Helm 0.3.110 gates both PostgreSQL and Elasticsearch on global.dev.
+# Keep PostgreSQL for the workflow services while omitting the unused ES pod.
+elasticsearch:
+  replicas: 0
+
+# This chart gates both its PostgreSQL and Elasticsearch dependencies on this
+# flag. PostgreSQL is required by the selected workflow tests.
+global:
+  dev: true
+
+# The selected gen3_workflow tests exercise one real instance of each service.
+# No test asserts service-level high availability.
+arborist:
+  enabled: true
+  replicaCount: 1
+
+fence:
+  enabled: true
+  replicaCount: 1
+
+funnel:
+  replicaCount: 1
+
+gen3-workflow:
+  enabled: true
+  replicaCount: 1
+
+guppy:
+  enabled: false
+
+indexd:
+  enabled: true
+  replicaCount: 1
+
+revproxy:
+  enabled: true
+  replicaCount: 1

@@ -1,22 +1,35 @@
-The Gen3 check builds the checked-out commit from a `git archive` snapshot while
-starting a two-node Kind cluster. It imports that image into both nodes and uses
-a Helm post-renderer to select it for the Funnel server and workers with pulls
-disabled. Before testing, it checks the running server image against the imported
-image identity and records the result in `logs/gen3-image-identity.json`.
+The Gen3 check has a ten-minute job limit and a five-to-six-minute runtime
+target. The budget includes dependency setup, image builds, cluster startup,
+service preparation, tests, and diagnostics. Hosted run timings establish whether
+the target is met. A shorter timeout alone is not a performance improvement.
 
-This avoids waiting for the separate multi-architecture Quay publishing job.
-The upstream Helm helper writes an unused nested image override for Funnel, so
-the post-renderer also prevents accidentally testing `cdis/funnel:main-gen3`.
-The build, cluster setup, and import durations are printed separately; the total
-CI improvement must be measured on hosted runs.
+The repository owns the workflow and lifecycle runner. The runner uses pinned
+integration-test and GitOps revisions, prepares dependencies alongside the
+candidate build and two-node Kind cluster, and runs the upstream
+`gen3_workflow and not wip` test selection. The fixture uses one replica of each
+required Gen3 service and omits the unused Elasticsearch pod. It retains the
+real authentication services, gateway, PostgreSQL, MinIO, and Mountpoint CSI.
 
-The Gen3 authorizer plugin is built from the pinned
-[`funnel-gen3-plugin` commit `eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3`](https://github.com/calypr/funnel-gen3-plugin/commit/eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3).
-CI uses the same Funnel builder stage and module source as the candidate image,
-then imports the plugin image into both Kind nodes. The post-renderer selects it
-for the `plugin` init container with pulls disabled, and the setup check records
-the plugin source commit and verifies the running init-container image ID.
-The plugin override stays optional for other users of this renderer.
+The Go compiler and module caches persist across runs. The candidate image is
+built from the checked-out Funnel source. Its identity is checked on both Kind
+nodes and against the running server. Workers inherit that image with registry
+pulls disabled. The Helm post-renderer prevents the chart's default Funnel image
+from replacing the candidate.
+
+The authorizer is built from the pinned
+[`funnel-gen3-plugin` commit `eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3`](https://github.com/calypr/funnel-gen3-plugin/commit/eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3)
+and the candidate's Funnel module. Both Kind nodes receive that image, and the
+verification hook checks the running plugin init container. The renderer's
+plugin override remains optional for other callers.
+
+The pytest controller creates test API keys once before starting its workers.
+TES completion polling uses two-second intervals and a 90-attempt limit, with
+the existing completion and output assertions unchanged.
+
+Tests stream their output to the job log and artifacts. Diagnostics cover the
+Gen3 service namespace and the separate worker namespace. The workflow reserves
+time for a final snapshot and uploads artifacts after failure. Inspect the
+phase timings, pytest output, pod states, and image identity when a check fails.
 
 The upstream test suite still uses MinIO and the real Mountpoint S3 CSI driver.
 The setup script pins CSI chart
@@ -37,6 +50,5 @@ different image contents.
 When upgrading, copy the selected upstream manifests with `crane copy`, verify
 that `crane digest` returns the same digest for each mirror, and update the chart
 version and image references together in `csi-images.yaml` and both Kubernetes
-workflows. Pin `setup-environment.sh` to the commit containing those values.
-Verify anonymous mirror pulls before updating the references. The workflow loads
-the setup scripts from its own commit so the tested scripts and source agree.
+workflows. Verify anonymous mirror pulls before updating the references. The
+workflow uses the setup scripts and image values from its own checkout.

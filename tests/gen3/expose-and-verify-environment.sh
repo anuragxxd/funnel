@@ -92,7 +92,11 @@ if [[ "$worker_template" != *'image: {{.Image}}'* || "$worker_template" != *'ima
   exit 1
 fi
 
-mkdir -p "$GITHUB_WORKSPACE/logs"
+artifacts_dir=${FUNNEL_CI_ARTIFACTS_DIR:-${ARTIFACTS_DIR:-$GITHUB_WORKSPACE/logs}}
+if [[ "$artifacts_dir" != /* ]]; then
+  artifacts_dir="$GITHUB_WORKSPACE/$artifacts_dir"
+fi
+mkdir -p "$artifacts_dir"
 jq -n \
   --arg source_sha "$source_sha" \
   --arg image_ref "$FUNNEL_CI_IMAGE_REF" \
@@ -107,8 +111,8 @@ jq -n \
   --argjson deployment "$deployment" \
   --argjson pods "$pods" \
   '{source_sha: $source_sha, image_ref: $image_ref, docker_image_id: $docker_image_id, image_digest: $image_digest, image_config_id: $image_config_id, plugin: {source_sha: $plugin_source_sha, image_ref: $plugin_image_ref, docker_image_id: $plugin_image_id, image_digest: $plugin_image_digest, image_config_id: $plugin_image_config_id}, server: {deployment_image: [$deployment.spec.template.spec.containers[] | select(.name == "funnel") | .image], plugin_image: [$deployment.spec.template.spec.initContainers[] | select(.name == "plugin") | .image], pods: [$pods.items[] | select(any(.spec.containers[]; .name == "funnel")) | {name: .metadata.name, node: .spec.nodeName, containers: [.status.containerStatuses[]? | select(.name == "funnel") | {image, imageID}], initContainers: [.status.initContainerStatuses[]? | select(.name == "plugin") | {image, imageID}]}]}}' \
-  >"$GITHUB_WORKSPACE/logs/gen3-image-identity.json"
-cat "$GITHUB_WORKSPACE/logs/gen3-image-identity.json"
+  >"$artifacts_dir/gen3-image-identity.json"
+cat "$artifacts_dir/gen3-image-identity.json"
 
 setup_dir=$(mktemp -d)
 trap 'rm -rf "$setup_dir"' EXIT
@@ -116,12 +120,3 @@ curl --fail --silent --show-error --location \
   https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_expose_kind_cluster.sh \
   --output "$setup_dir/ci_expose_kind_cluster.sh"
 bash "$setup_dir/ci_expose_kind_cluster.sh"
-
-# Pytest worker crashes discard captured task logs. Keep a bounded independent
-# sample in the log that the reusable workflow prints even when a worker dies.
-: "${WORKING_DIR:?integration suite working directory is required}"
-diagnostics_log="$GITHUB_WORKSPACE/$WORKING_DIR/logs/gh_action_logs.txt"
-mkdir -p "$(dirname "$diagnostics_log")"
-nohup bash "$GITHUB_WORKSPACE/tests/gen3/collect-task-diagnostics.sh" \
-  >>"$diagnostics_log" 2>&1 </dev/null &
-printf 'Gen3 task diagnostics started as PID %s in %s\n' "$!" "$diagnostics_log"

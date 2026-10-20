@@ -37,8 +37,16 @@ jobs:
           kubectl_version: v1.35.0
           cluster_name: funnel-gen3
 
+      - name: Build and load candidate Funnel image
+        run: bash tests/kubernetes/build-and-load-candidate-image.sh
+
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+
+      - name: Install local Funnel image post-renderer
+        run: helm plugin install "$GITHUB_WORKSPACE/tests/gen3"
  
       # ---------------------------
       # 2. Install Funnel + MinIO
@@ -73,7 +81,7 @@ jobs:
 
           helm repo add calypr https://calypr.org/helm-charts
           helm repo update
-          helm upgrade --install funnel calypr/funnel --wait --timeout=60s --version 0.1.99-rc.35 --values values.yaml
+          helm upgrade --install funnel calypr/funnel --wait --timeout=60s --version 0.1.99-rc.35 --values values.yaml --post-renderer funnel-ci-image
 
       - name: Debug Funnel pods (on failure)
         if: failure()
@@ -200,6 +208,20 @@ jobs:
       # 5. Upload test logs + reports
       # ------------------------------
 
+      - name: Diagnose Kubernetes failures
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl describe pods -A
+          kubectl get events -A --sort-by='.lastTimestamp'
+          kubectl logs -l app.kubernetes.io/instance=minio --all-containers --tail=100 || true
+          for pod in $(kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}'); do
+            namespace=${pod%%/*}
+            name=${pod#*/}
+            kubectl -n "$namespace" logs "$name" --all-containers --prefix --tail=200 || true
+            kubectl -n "$namespace" logs "$name" --all-containers --prefix --previous --tail=200 || true
+          done
+
       - name: Upload Nextflow logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -212,11 +234,3 @@ jobs:
             nf-canary/.nextflow.log
           if-no-files-found: ignore
           include-hidden-files: true
-
-      - name: Diagnose Kubernetes failures
-        if: failure()
-        run: |
-          kubectl get pods -A -o wide
-          kubectl describe pods
-          kubectl get events -A --sort-by='.lastTimestamp'
-          kubectl logs -l app.kubernetes.io/instance=minio --all-containers --tail=100

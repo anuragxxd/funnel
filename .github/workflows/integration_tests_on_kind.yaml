@@ -17,7 +17,7 @@ jobs:
       EXTERNAL_TO_CTDS: "true"
       SERVICE_TO_TEST: gen3_workflow
       SETUP_SCRIPT_1: https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_start_kind_cluster.sh
-      SETUP_SCRIPT_2: https://raw.githubusercontent.com/calypr/funnel/1b7262630b9970dbc04ba211203f8ed57cf42940/tests/gen3/setup-environment.sh
+      SETUP_SCRIPT_2: https://raw.githubusercontent.com/calypr/funnel/3d38a41dfd135bd9aabc86c8cc00431c9641bbe0/tests/gen3/setup-environment.sh
       SETUP_SCRIPT_3: https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_expose_kind_cluster.sh
     secrets:
       CI_TEST_ORCID_USERID: ""

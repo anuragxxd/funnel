@@ -27,6 +27,11 @@ def replace_once(path: Path, original: str, configured: str) -> None:
 def configure(test_root: Path) -> None:
     replace_once(test_root / "services" / "gen3workflow.py", ORIGINAL, CONFIGURED)
     replace_once(test_root / "conftest.py", AUTH_ORIGINAL, AUTH_CONFIGURED)
+    replace_once(
+        test_root / "tests" / "test_gen3_workflow.py",
+        'logs -l app=funnel-worker --all-containers --tail -1',
+        'logs -l app=funnel-worker,task-id={task_id} --all-containers --tail -1',
+    )
     print("Gen3 TES polling: 90 attempts at 2-second intervals; API keys created once by the pytest controller")
 
 

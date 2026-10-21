@@ -55,9 +55,13 @@ PYTHON
       '.info.imageSpec | .architecture == $architecture and .config.Labels["io.calypr.funnel.fixture-recipe"] == $recipe' >/dev/null
     runtime_image=$image
     if [[ "$image" != */* ]]; then runtime_image="docker.io/library/$image"; fi
-    docker exec "$node" ctr -n k8s.io run --rm "$runtime_image" "gen3-elf-$fixture-$$" \
-      /bin/sh -c 'head -c20 "$1"' sh "$executable" | \
-      python3 "$script_dir/verify-elf.py" "$architecture" "$image:$executable"
+    executables=("$executable")
+    if [[ "$fixture" == dicom ]]; then executables+=(/usr/bin/bash); fi
+    for executable_path in "${executables[@]}"; do
+      docker exec "$node" ctr -n k8s.io run --rm "$runtime_image" "gen3-elf-$fixture-$$" \
+        /bin/sh -c 'head -c20 "$1"' sh "$executable_path" | \
+        python3 "$script_dir/verify-elf.py" "$architecture" "$image:$executable_path"
+    done
     printf 'Native test image loaded: image=%s node=%s architecture=%s recipe=%s\n' "$image" "$node" "$architecture" "$recipe"
   done
   if [[ "$fixture" == arborist && -n "${FUNNEL_CI_ARBORIST_READY_FILE:-}" ]]; then

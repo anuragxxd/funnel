@@ -55,7 +55,15 @@ def main(test_root):
         destination.write_text(original)
         conftest = copy / "conftest.py"
         conftest.write_text(original_conftest)
+        (copy / "tests").mkdir()
+        workflow_test = copy / "tests" / "test_gen3_workflow.py"
+        workflow_test.write_text((test_root / "tests" / "test_gen3_workflow.py").read_text())
+        original_workflow = workflow_test.read_text()
         configuration.configure(copy)
+        assert 'app=funnel-worker,task-id={task_id} --all-containers' in workflow_test.read_text()
+        assert workflow_test.read_text().replace(
+            'app=funnel-worker,task-id={task_id}', 'app=funnel-worker'
+        ) == original_workflow
         configured = destination.read_text()
         configured_conftest = conftest.read_text()
         configuration.configure(copy)

@@ -37,6 +37,9 @@ if [[ "$deployment_count" != 1 || "$configmap_count" != 1 ]]; then
   printf 'expected one Funnel Deployment and config map, got %s and %s\n' "$deployment_count" "$configmap_count" >&2
   exit 1
 fi
+# Native task fixtures must never be replaced by the upstream x86-only tags.
+export FUNNEL_CI_EXECUTOR_PULL_ORIGINAL='imagePullPolicy: {{if .ImagePullPolicy}}{{.ImagePullPolicy}}{{else}}Always{{end}}'
+export FUNNEL_CI_EXECUTOR_PULL_NATIVE='imagePullPolicy: {{if or (eq .Image "quay.io/cdis/gen3-workflow:integration_tests_dicom_image") (eq .Image "quay.io/biocontainers/ubuntu:24.04")}}Never{{else}}{{if .ImagePullPolicy}}{{.ImagePullPolicy}}{{else}}Always{{end}}{{end}}'
 worker_template=$(yq eval-all -r 'select(.kind == "ConfigMap" and .metadata.name == "funnel-server-config") | .data."funnel-server.yaml" | from_yaml | .Kubernetes.WorkerTemplate' "$input")
 if [[ $(printf '%s\n' "$worker_template" | awk '/imagePullPolicy: Always$/ { count++ } END { print count + 0 }') != 1 || "$worker_template" != *'image: {{.Image}}'* ]]; then
   printf 'unexpected Funnel worker template image contract\n' >&2
@@ -58,6 +61,10 @@ FUNNEL_CI_IMAGE_REF="$FUNNEL_CI_IMAGE_REF" FUNNEL_CI_PLUGIN_IMAGE_REF="$FUNNEL_C
     ) // .
   ' "$input" >"$output"
 if [[ -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" ]]; then
+  yq eval '(select(.kind == "ConfigMap" and .metadata.name == "funnel-server-config") |
+    .data."funnel-server.yaml" |= (from_yaml |
+      .Kubernetes.ExecutorTemplate |= sub(strenv(FUNNEL_CI_EXECUTOR_PULL_ORIGINAL); strenv(FUNNEL_CI_EXECUTOR_PULL_NATIVE)) |
+      to_yaml)) // .' -i "$output"
   plugin_count=$(yq eval-all -r '[select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.initContainers[]? | select(.name == "plugin")] | length' "$input")
   [[ "$plugin_count" == 1 ]] || { printf 'expected one Gen3 plugin init container\n' >&2; exit 1; }
 yq eval '
@@ -160,6 +167,11 @@ if [[ "$actual_image" != "$FUNNEL_CI_IMAGE_REF" || ( -n "$FUNNEL_CI_PLUGIN_IMAGE
 fi
 if [[ "$worker_template" != *'image: {{.Image}}'* || "$worker_template" != *'imagePullPolicy: Never'* || "$worker_template" == *'imagePullPolicy: Always'* ]]; then
   printf 'post-rendered Funnel worker image contract is invalid\n' >&2
+  exit 1
+fi
+executor_template=$(yq eval-all -r 'select(.kind == "ConfigMap" and .metadata.name == "funnel-server-config") | .data."funnel-server.yaml" | from_yaml | .Kubernetes.ExecutorTemplate' "$output")
+if [[ -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" && "$executor_template" != *"$FUNNEL_CI_EXECUTOR_PULL_NATIVE"* ]]; then
+  printf 'post-rendered executor template can overwrite native task fixtures\n' >&2
   exit 1
 fi
 printf 'rendered Funnel images (bootstrap=%s): %s, %s\n' "$bootstrap_render" "$FUNNEL_CI_IMAGE_REF" "$FUNNEL_CI_PLUGIN_IMAGE_REF" >&2

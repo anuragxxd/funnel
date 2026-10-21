@@ -9,13 +9,13 @@ if [[ "$bootstrap_render" == true ]]; then
   FUNNEL_CI_PLUGIN_IMAGE_REF=${FUNNEL_CI_PLUGIN_IMAGE_REF:-quay.io/ohsu-comp-bio/funnel-gen3-plugin:ci-${source_sha:0:12}-eacaf197bfbc}
 fi
 : "${FUNNEL_CI_IMAGE_REF:?candidate image reference is required}"
-: "${FUNNEL_CI_PLUGIN_IMAGE_REF:?Gen3 plugin image reference is required}"
+FUNNEL_CI_PLUGIN_IMAGE_REF=${FUNNEL_CI_PLUGIN_IMAGE_REF:-}
 
 if [[ ! "$FUNNEL_CI_IMAGE_REF" =~ ^quay\.io/ohsu-comp-bio/funnel:(ci-[0-9a-f]{12}|local-[0-9a-f]{64})$ ]]; then
   printf 'unexpected candidate image reference: %s\n' "$FUNNEL_CI_IMAGE_REF" >&2
   exit 1
 fi
-if [[ ! "$FUNNEL_CI_PLUGIN_IMAGE_REF" =~ ^quay\.io/ohsu-comp-bio/funnel-gen3-plugin:(ci-[0-9a-f]{12}-eacaf197bfbc|local-[0-9a-f]{64}-eacaf197bfbc)$ ]]; then
+if [[ -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" && ! "$FUNNEL_CI_PLUGIN_IMAGE_REF" =~ ^quay\.io/ohsu-comp-bio/funnel-gen3-plugin:(ci-[0-9a-f]{12}-eacaf197bfbc|local-[0-9a-f]{64}-eacaf197bfbc)$ ]]; then
   printf 'unexpected plugin image reference: %s\n' "$FUNNEL_CI_PLUGIN_IMAGE_REF" >&2
   exit 1
 fi
@@ -56,12 +56,16 @@ FUNNEL_CI_IMAGE_REF="$FUNNEL_CI_IMAGE_REF" FUNNEL_CI_PLUGIN_IMAGE_REF="$FUNNEL_C
       )
     ) // .
   ' "$input" >"$output"
+if [[ -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" ]]; then
+  plugin_count=$(yq eval-all -r '[select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.initContainers[]? | select(.name == "plugin")] | length' "$input")
+  [[ "$plugin_count" == 1 ]] || { printf 'expected one Gen3 plugin init container\n' >&2; exit 1; }
 yq eval '
   (select(.kind == "Deployment" and .metadata.name == "funnel-server") |
     (.spec.template.spec.initContainers[] | select(.name == "plugin")) |=
       (.image = strenv(FUNNEL_CI_PLUGIN_IMAGE_REF) | .imagePullPolicy = "Never")
   ) // .
 ' -i "$output"
+fi
 yq eval '
   (select(.kind == "Deployment" and .metadata.name == "funnel-server") |
     (.spec.template.spec.initContainers[] | select(.name == "config-updater")) |=
@@ -128,7 +132,7 @@ actual_image=$(yq eval-all -r 'select(.kind == "Deployment" and .metadata.name =
 actual_plugin=$(yq eval-all -r 'select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.initContainers[] | select(.name == "plugin") | .image' "$output")
 server_policy=$(yq eval-all -r 'select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.containers[] | select(.name == "funnel") | .imagePullPolicy' "$output")
 worker_template=$(yq eval-all -r 'select(.kind == "ConfigMap" and .metadata.name == "funnel-server-config") | .data."funnel-server.yaml" | from_yaml | .Kubernetes.WorkerTemplate' "$output")
-if [[ "$actual_image" != "$FUNNEL_CI_IMAGE_REF" || "$actual_plugin" != "$FUNNEL_CI_PLUGIN_IMAGE_REF" || "$server_policy" != Never ]]; then
+if [[ "$actual_image" != "$FUNNEL_CI_IMAGE_REF" || ( -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" && "$actual_plugin" != "$FUNNEL_CI_PLUGIN_IMAGE_REF" ) || "$server_policy" != Never ]]; then
   printf 'post-rendered Funnel image mismatch: server=%s plugin=%s policy=%s\n' "$actual_image" "$actual_plugin" "$server_policy" >&2
   exit 1
 fi

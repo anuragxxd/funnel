@@ -459,6 +459,7 @@ load_hook_environment
   exit 2
 }
 
+export FUNNEL_CI_ARBORIST_READY_FILE="$artifacts_dir/arborist-ready"
 start_parallel_phase test-tools "$artifacts_dir/test-tools.log" "$artifacts_dir/test-tools.exit" \
   bash "$script_dir/prepare-test-tools.sh" || exit $?
 start_parallel_phase gen3-storage "$artifacts_dir/gen3-storage.log" "$artifacts_dir/gen3-storage.exit" \
@@ -480,5 +481,6 @@ run_phase expose-gen3 bash "$script_dir/expose-and-verify-environment.sh" || exi
 load_hook_environment
 export PYTEST_ADDOPTS=${PYTEST_ADDOPTS:-}
 
+run_phase executable-architecture bash "$script_dir/verify-service-executables.sh" || exit $?
 run_phase cache-fixtures python3 "$script_dir/cache-fixture-images.py" save || exit $?
 run_test_phase || exit $?

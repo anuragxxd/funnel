@@ -136,6 +136,11 @@ yq eval '
     select(.image == strenv(FUNNEL_CI_AWSHELPER_IMAGE))) |=
       (.image = strenv(FUNNEL_CI_NATIVE_AWSHELPER_IMAGE) | .imagePullPolicy = "Never")
 ' -i "$output"
+yq eval '
+  (.. | select(tag == "!!map" and has("image")) |
+    select(.image == "quay.io/cdis/arborist:master")) |=
+      (.image = "funnel-gen3-arborist:ci" | .imagePullPolicy = "Never")
+' -i "$output"
 fi
 
 FIXTURE_IMAGE_LOCK="$fixture_dir/fixture-images.json" yq eval '

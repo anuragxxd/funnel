@@ -35,7 +35,8 @@ def yaml(path):
     return json.loads(subprocess.check_output(["yq", "-o=json", str(path)]))
 
 
-images = json.loads((fixture / "fixture-images.json").read_text())["images"]
+images = {name: item for name, item in json.loads((fixture / "fixture-images.json").read_text())["images"].items()
+          if name != "quay.io/cdis/arborist:master"}
 services = [item["reference"] for item in images.values()]
 bootstrap = [
     item["reference"] for name, item in images.items()
@@ -50,7 +51,7 @@ services = [reference for reference in services if reference not in auth]
 csi = yaml(fixture / ("csi-images-arm64.yaml" if architecture == "arm64" else "csi-images.yaml"))
 csi_images = [csi["image"], *(value["image"] for value in csi["sidecars"].values())]
 manifest = {
-    "format": 3,
+    "format": 4,
     "auth": sorted({canonical(reference) for reference in auth}),
     "bootstrap": sorted({canonical(reference) for reference in bootstrap}),
     "platform": platform,

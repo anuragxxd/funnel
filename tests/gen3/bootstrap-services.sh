@@ -202,6 +202,10 @@ activate_auth() {
     log "waiting for authentication images before activating services"
     while [[ ! -f "$FUNNEL_CI_AUTH_IMAGES_READY_FILE" ]]; do sleep 1; done
   fi
+  if [[ -n "${FUNNEL_CI_ARBORIST_READY_FILE:-}" ]]; then
+    log "waiting for the verified native Arborist image"
+    while [[ ! -f "$FUNNEL_CI_ARBORIST_READY_FILE" ]]; do sleep 1; done
+  fi
   for deployment in arborist-deployment indexd-deployment fence-deployment presigned-url-fence-deployment; do
     "$kubectl_bin" -n "$namespace" get deployment "$deployment" >/dev/null 2>&1 || continue
     "$kubectl_bin" -n "$namespace" scale "deployment/$deployment" --replicas=1

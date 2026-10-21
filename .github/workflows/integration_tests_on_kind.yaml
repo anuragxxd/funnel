@@ -154,14 +154,14 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.FUNNEL_CI_FIXTURE_CACHE_DIR }}
-          key: gen3-fixtures-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/fixture-images.json', 'tests/gen3/csi-images-arm64.yaml', 'tests/gen3/values-ci.yaml') }}
+          key: gen3-fixtures-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/fixture-images.json', 'tests/gen3/csi-images-arm64.yaml', 'tests/gen3/values-ci.yaml') }}
 
       - name: Restore native task images
         id: restore-test-images
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.FUNNEL_CI_TEST_IMAGE_CACHE_DIR }}
-          key: gen3-task-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/awshelper-image/**', 'tests/gen3/dicom-image/**', 'tests/gen3/canary-image/**', 'tests/gen3/prepare-test-tools.sh') }}
+          key: gen3-task-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/arborist-image/**', 'tests/gen3/awshelper-image/**', 'tests/gen3/dicom-image/**', 'tests/gen3/canary-image/**', 'tests/gen3/prepare-test-tools.sh') }}
 
       - name: Install Kind
         shell: bash
@@ -235,7 +235,7 @@ jobs:
         continue-on-error: true
         with:
           path: ${{ env.FUNNEL_CI_FIXTURE_CACHE_DIR }}
-          key: gen3-fixtures-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/fixture-images.json', 'tests/gen3/csi-images-arm64.yaml', 'tests/gen3/values-ci.yaml') }}
+          key: gen3-fixtures-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/fixture-images.json', 'tests/gen3/csi-images-arm64.yaml', 'tests/gen3/values-ci.yaml') }}
 
       - name: Save native task images
         if: always() && steps.lifecycle.outputs.test_images_ready == 'true' && steps.restore-test-images.outputs.cache-hit != 'true'
@@ -244,4 +244,4 @@ jobs:
         continue-on-error: true
         with:
           path: ${{ env.FUNNEL_CI_TEST_IMAGE_CACHE_DIR }}
-          key: gen3-task-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/awshelper-image/**', 'tests/gen3/dicom-image/**', 'tests/gen3/canary-image/**', 'tests/gen3/prepare-test-tools.sh') }}
+          key: gen3-task-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/gen3/arborist-image/**', 'tests/gen3/awshelper-image/**', 'tests/gen3/dicom-image/**', 'tests/gen3/canary-image/**', 'tests/gen3/prepare-test-tools.sh') }}

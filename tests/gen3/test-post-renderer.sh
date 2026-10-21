@@ -31,6 +31,17 @@ data:
         containers:
           - image: {{.Image}}
             imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arborist-deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: arborist
+          image: quay.io/cdis/arborist:master
 YAML
 export FUNNEL_CI_IMAGE_REF=quay.io/ohsu-comp-bio/funnel:ci-123456789abc
 registry_helper=$(yq -r '.global.awshelper_container_image' "$script_dir/values-ci.yaml")
@@ -48,5 +59,11 @@ for mode in plain gen3; do
     policy=$(yq -r 'select(.kind == "Deployment") | .spec.template.spec.initContainers[] | select(.name == "config-updater") | .imagePullPolicy' "$tmp/$mode.yaml")
     [[ "$policy" == Never ]]
   fi
-  printf 'PASS: %s chart selects the correct helper image\n' "$mode"
+  arborist=$(yq -r 'select(.metadata.name == "arborist-deployment") | .spec.template.spec.containers[0].image' "$tmp/$mode.yaml")
+  if [[ "$mode" == gen3 ]]; then
+    [[ "$arborist" == funnel-gen3-arborist:ci ]]
+  else
+    [[ "$arborist" == quay.io/cdis/arborist:*@sha256:* ]]
+  fi
+  printf 'PASS: %s chart selects the correct helper and Arborist images\n' "$mode"
 done

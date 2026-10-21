@@ -41,6 +41,7 @@ case "$*" in *pytest*) echo pytest-end >>"$EVENTS";; *poetry*) echo python-start
 EOF
   printf '#!/bin/sh\nuv poetry install\n' >"$f/prepare-python.sh"
   printf '#!/bin/sh\nexit 0\n' >"$f/prepare-test-tools.sh"
+  printf '#!/bin/sh\necho executable-check >>"$EVENTS"\nif [ "$TEST_CASE" = foreign-executable ]; then exit 73; fi\n' >"$f/verify-service-executables.sh"
   echo "pass" >"$f/cache-fixture-images.py"
   echo "pass" >"$f/configure-tests.py"
   cat >"$f/build-and-start-kind.sh" <<'EOF'
@@ -123,6 +124,7 @@ run happy 120
 (( $(line happy storage-end) < $(line happy users-start) && $(line happy auth-end) < $(line happy users-start) )) || fail 'users began before storage/auth finished'
 (( $(line happy users-end) < $(line happy deploy-start) && $(line happy build-end) < $(line happy deploy-start) && $(line happy python-end) < $(line happy deploy-start) )) || fail 'deploy began before all branches finished'
 grep -q '^pytest-end$' "$tmp/happy/events" || fail 'pytest not reached'
+(( $(line happy executable-check) < $(line happy pytest-end) )) || fail 'pytest ran before executable verification'
 forward_pid=$(cat "$tmp/happy/artifacts/port-forward.log.pid")
 for (( attempt=0; attempt<20; attempt++ )); do
   kill -0 "$forward_pid" 2>/dev/null || break
@@ -168,3 +170,9 @@ run wrong-java 120
 [[ $(cat "$tmp/wrong-java/status") == 2 ]] || fail 'unsupported Java did not fail preflight'
 ! grep -q '^build-start$' "$tmp/wrong-java/events" || fail 'build started without Java 21'
 echo 'PASS: unsupported Java fails before any environment build'
+
+fixture foreign-executable
+run foreign-executable 120
+[[ $(cat "$tmp/foreign-executable/status") == 73 ]] || fail 'foreign executable rejection was lost'
+! grep -q '^pytest-end$' "$tmp/foreign-executable/events" || fail 'pytest ran with a foreign executable'
+echo 'PASS: foreign executables block pytest'

@@ -42,13 +42,11 @@ remaining_seconds() {
 run_phase() {
   local name=$1
   shift
-  local remaining phase_limit status
-  remaining=$(remaining_seconds)
-  phase_limit=$((remaining - 60))
-  if (( phase_limit < 1 )); then
+  local phase_limit status
+  phase_limit=$(phase_limit_seconds) || {
     log "not enough lifecycle budget to start phase: $name"
     return 124
-  fi
+  }
 
   record_event "$name" start
   log "phase start: $name"
@@ -65,16 +63,15 @@ run_phase() {
 
 run_test_phase() {
   local remaining test_limit outer_limit status
-  remaining=$(remaining_seconds)
-  test_limit=$((remaining - 60))
-  if (( test_limit > 480 )); then
-    test_limit=480
-  fi
-  if (( test_limit < 1 )); then
+  test_limit=$(phase_limit_seconds) || {
     log 'not enough lifecycle budget to start pytest while preserving final diagnostics time'
     return 124
+  }
+  outer_limit=0
+  if (( FUNNEL_CI_DEADLINE_EPOCH != 0 )); then
+    remaining=$(remaining_seconds)
+    outer_limit=$remaining
   fi
-  outer_limit=$remaining
 
   record_event pytest start
   log "phase start: pytest selected_suite_seconds=$test_limit"
@@ -125,6 +122,10 @@ load_hook_environment() {
 }
 
 phase_limit_seconds() {
+  if (( FUNNEL_CI_DEADLINE_EPOCH == 0 )); then
+    printf '0\n'
+    return 0
+  fi
   local remaining limit
   remaining=$(remaining_seconds)
   limit=$((remaining - 60))

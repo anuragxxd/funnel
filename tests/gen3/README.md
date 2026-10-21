@@ -75,10 +75,13 @@ Local image builds include uncommitted source and use content-derived image tags
 Local and hosted Gen3 runs build ARM64 images. Focused local passes are
 debugging evidence; require the complete fresh lifecycle for final verification.
 
-The Gen3 check has a ten-minute job limit and a five-to-six-minute runtime
-target. The budget includes dependency setup, image builds, cluster startup,
-service preparation, tests, and diagnostics. Hosted run timings establish whether
-the target is met. A shorter timeout alone is not a performance improvement.
+The Gen3 check has no repository-imposed overall deadline. Its five-to-six-minute
+runtime target still includes setup, tests, and diagnostics. GitHub's platform
+limits still apply. Local and hosted runs use `FUNNEL_CI_DEADLINE_EPOCH=0` and
+`GEN3_TEST_MAX_SECONDS=0` to disable lifecycle and pytest session deadlines.
+Individual operations retain timeouts, real failures stop the run, and cancellation
+still cleans up child processes. An explicit nonzero deadline remains available
+for bounded debugging runs.
 
 The repository owns the workflow and lifecycle runner. The runner uses pinned
 integration-test and GitOps revisions, prepares dependencies alongside the

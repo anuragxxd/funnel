@@ -85,7 +85,7 @@ case "$mode" in
     interval=$3
     maximum=$4
     validate_seconds interval "$interval" 1 120
-    validate_seconds max-seconds "$maximum" 1 3600
+    [[ "$maximum" =~ ^[0-9]+$ ]] || { printf 'max-seconds must be nonnegative\n' >&2; exit 2; }
 
     snapshot "$service_namespace" "$jobs_namespace" true false
     start=$SECONDS
@@ -100,12 +100,12 @@ case "$mode" in
     }
     trap stop INT TERM
 
-    while (( SECONDS < deadline )); do
+    while (( maximum == 0 || SECONDS < deadline )); do
       sleep "$interval" &
       sleep_pid=$!
       wait "$sleep_pid" || true
       sleep_pid=
-      (( SECONDS < deadline )) || break
+      (( maximum == 0 || SECONDS < deadline )) || break
       sample=$((sample + 1))
       if (( sample % 4 == 0 )); then
         snapshot "$service_namespace" "$jobs_namespace" true false

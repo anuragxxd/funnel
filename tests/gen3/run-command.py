@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a Gen3 command with bounded, redacted streaming output."""
+"""Run a Gen3 command with redacted output and an optional deadline (0 disables it)."""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def run(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     pending = bytearray()
-    deadline = time.monotonic() + max_seconds
+    deadline = time.monotonic() + max_seconds if max_seconds else float("inf")
     stop_reason: str | None = None
     shutdown_deadline: float | None = None
     force_close_deadline: float | None = None
@@ -132,6 +132,10 @@ def run(
                 emit(bytes(pending[:end]), artifact)
                 del pending[:end]
 
+            if max_seconds == 0:
+                while process.poll() is None and requested_signal is None:
+                    time.sleep(0.1)
+
             if process.poll() is None:
                 if requested_signal is not None and stop_reason is None:
                     stop_reason = "signal"
@@ -147,7 +151,8 @@ def run(
                         return_code = process.wait()
                 else:
                     try:
-                        return_code = process.wait(timeout=max(0, deadline - time.monotonic()))
+                        wait_timeout = None if max_seconds == 0 else max(0, deadline - time.monotonic())
+                        return_code = process.wait(timeout=wait_timeout)
                     except subprocess.TimeoutExpired:
                         stop_reason = "timeout"
                         signal_test_group(signal.SIGTERM)
@@ -204,8 +209,8 @@ def main(arguments: list[str]) -> int:
     except ValueError:
         print("max-seconds must be an integer", file=sys.stderr)
         return 2
-    if max_seconds < 1:
-        print("max-seconds must be positive", file=sys.stderr)
+    if max_seconds < 0:
+        print("max-seconds must be nonnegative (0 disables the deadline)", file=sys.stderr)
         return 2
 
     return run(working_dir, log_path, max_seconds, arguments[3:], append_value == "1")

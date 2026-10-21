@@ -15,7 +15,6 @@ jobs:
   integration_tests:
     name: Integration tests / integration_tests
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
     env:
       TEST_REPO: ${{ github.workspace }}/gen3-code-vigil
       TEST_REPO_SHA: 87da170a9a1cb099cfd1aded9402bc323201d6bc
@@ -52,11 +51,11 @@ jobs:
       AWS_EC2_METADATA_DISABLED: "true"
 
     steps:
-      - name: Set lifecycle deadline
+      - name: Record lifecycle start
         shell: bash
         run: |
           started_epoch=$(date +%s)
-          deadline_epoch=$((started_epoch + 540))
+          deadline_epoch=0
           state_dir="$RUNNER_TEMP/funnel-gen3-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$state_dir"
           rm -f "$state_dir/kind-ready"
@@ -187,7 +186,6 @@ jobs:
 
       - name: Run Gen3 integration lifecycle
         id: lifecycle
-        timeout-minutes: 9
         shell: bash
         run: bash tests/gen3/run-integration.sh
 

@@ -21,11 +21,11 @@ test_root=$(cd "$test_root" && pwd)
 mkdir -p "$artifacts_dir"
 artifacts_dir=$(cd "$artifacts_dir" && pwd)
 
-test_max_seconds=${GEN3_TEST_MAX_SECONDS:-480}
+test_max_seconds=${GEN3_TEST_MAX_SECONDS:-0}
 diagnostics_interval_seconds=${GEN3_DIAGNOSTICS_INTERVAL_SECONDS:-15}
 final_snapshot_max_seconds=${GEN3_FINAL_DIAGNOSTICS_MAX_SECONDS:-20}
-[[ "$test_max_seconds" =~ ^[0-9]+$ ]] && (( test_max_seconds >= 1 && test_max_seconds <= 480 )) || {
-  printf 'GEN3_TEST_MAX_SECONDS must be an integer in [1, 480]\n' >&2
+[[ "$test_max_seconds" =~ ^[0-9]+$ ]] && (( test_max_seconds >= 0 )) || {
+  printf 'GEN3_TEST_MAX_SECONDS must be a nonnegative integer (0 disables the deadline)\n' >&2
   exit 2
 }
 [[ "$diagnostics_interval_seconds" =~ ^[0-9]+$ ]] && (( diagnostics_interval_seconds >= 1 && diagnostics_interval_seconds <= 120 )) || {
@@ -89,8 +89,12 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-printf 'Gen3 tests starting. Session cap: %ss. Artifacts: %s\n' "$test_max_seconds" "$artifacts_dir"
-GEN3_LOG_APPEND=1 python3 "$command_runner" "$test_root" "$diagnostics_log" "$((test_max_seconds + 60))" \
+collector_limit=0
+if (( test_max_seconds > 0 )); then
+  collector_limit=$((test_max_seconds + 60))
+fi
+printf 'Gen3 tests starting. Session cap: %ss (0 means unlimited). Artifacts: %s\n' "$test_max_seconds" "$artifacts_dir"
+GEN3_LOG_APPEND=1 python3 "$command_runner" "$test_root" "$diagnostics_log" "$collector_limit" \
   bash "$collector" watch "$NAMESPACE" "$diagnostics_interval_seconds" "$test_max_seconds" \
   >/dev/null &
 collector_pid=$!

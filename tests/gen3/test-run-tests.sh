@@ -54,7 +54,7 @@ chmod +x "$tmp/bin/kubectl"
 failure_artifacts="$tmp/failure-artifacts"
 set +e
 NAMESPACE=contract \
-GEN3_TEST_MAX_SECONDS=10 \
+GEN3_TEST_MAX_SECONDS=0 \
 GEN3_DIAGNOSTICS_INTERVAL_SECONDS=120 \
 PATH="$tmp/bin:$PATH" \
   "$runner" "$tmp/gen3-tests" "$failure_artifacts" bash -c 'printf "pytest fixture failure\nAuthorization: Bearer header.payload.signature\njwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\n"; exit 23'
@@ -83,7 +83,7 @@ rg -q '\[REDACTED\]' "$failure_artifacts/gen3-diagnostics.log"
 live_artifacts="$tmp/live-artifacts"
 live_console="$tmp/live-console.log"
 NAMESPACE=contract \
-GEN3_TEST_MAX_SECONDS=10 \
+GEN3_TEST_MAX_SECONDS=0 \
 GEN3_DIAGNOSTICS_INTERVAL_SECONDS=120 \
 PATH="$tmp/bin:$PATH" \
   "$runner" "$tmp/gen3-tests" "$live_artifacts" python3 -c \
@@ -109,7 +109,7 @@ signal_artifacts="$tmp/signal-artifacts"
 signal_console="$tmp/signal-console.log"
 signal_child_marker="$tmp/signal-child-survived"
 NAMESPACE=contract \
-GEN3_TEST_MAX_SECONDS=10 \
+GEN3_TEST_MAX_SECONDS=0 \
 GEN3_DIAGNOSTICS_INTERVAL_SECONDS=120 \
 PATH="$tmp/bin:$PATH" \
   "$runner" "$tmp/gen3-tests" "$signal_artifacts" python3 -c \

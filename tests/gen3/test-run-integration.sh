@@ -103,12 +103,14 @@ echo diagnostics >>"$EVENTS"' >"$f/collect-task-diagnostics.sh"
 run() {
   n=$1; budget=$2; f=$tmp/$n; ws=$f/work
   touch "$f/events" "$f/github-env" "$f/github-output"; : >"$f/events"
+  deadline=0
+  if (( budget > 0 )); then deadline=$(($(date +%s)+budget)); fi
   set +e
   env PATH="$f/bin:$PATH" HOME="$f/home" EVENTS="$f/events" TEST_CASE="$n" \
    GITHUB_WORKSPACE="$ws" GH_WORKSPACE="$ws" TEST_REPO="$ws/gen3-code-vigil" TEST_REPO_SHA=87da170a9a1cb099cfd1aded9402bc323201d6bc \
    WORKING_DIR=gen3-code-vigil/gen3-integration-tests GEN3_GITOPS_REPO="$ws/gen3-gitops-ci" GEN3_GITOPS_SHA=19a687205de78d985416f44ad89c79bd2e66dab8 \
    FUNNEL_CI_ARTIFACTS_DIR="$f/artifacts" FUNNEL_CI_STATE_DIR="$f/state" FUNNEL_CI_KUBECONFIG="$f/state/kubeconfig" FUNNEL_CI_KIND_READY_FILE="$f/state/kind-ready" FUNNEL_CI_BUILD_PLATFORM=linux/arm64 \
-   FUNNEL_CI_DEADLINE_EPOCH="$(($(date +%s)+budget))" FUNNEL_CI_STARTED_EPOCH="$(date +%s)" GITHUB_ENV="$f/github-env" GITHUB_OUTPUT="$f/github-output" \
+   FUNNEL_CI_DEADLINE_EPOCH="$deadline" FUNNEL_CI_STARTED_EPOCH="$(date +%s)" GITHUB_ENV="$f/github-env" GITHUB_OUTPUT="$f/github-output" \
    REPO=funnel REPO_FN=calypr/funnel BRANCH=main PR_NUM=1 COMMIT_SHA=deadbeef RUN_NUM=1 RUN_ID=1 ATTEMPT_NUM=1 CI_ENV=default HELM_BRANCH=master \
    QUAY_ORG=ohsu-comp-bio QUAY_REPO=funnel EXTERNAL_TO_CTDS=true HOSTNAME=localhost:8000 HOSTNAME_PROTOCOL=http SERVICE_TO_TEST=gen3_workflow \
    NAMESPACE=gen3 GEN3_CHART_VERSION=0.3.110 GEN3_VALUES_FILE="$ws/tests/gen3/values-ci.yaml" "$f/run-integration.sh" >"$f/output" 2>&1
@@ -118,12 +120,13 @@ run() {
 }
 line() { grep -n -m1 -x "$2" "$tmp/$1/events" | cut -d: -f1 || fail "$1 missing $2"; }
 fixture happy
-run happy 120
+run happy 0
 [[ $(cat "$tmp/happy/status") == 0 ]] || { cat "$tmp/happy/output" >&2; fail 'happy lifecycle failed'; }
 (( $(line happy python-start) < $(line happy auth-start) && $(line happy auth-start) < $(line happy build-end) )) || fail 'auth did not overlap bootstrap/build'
 (( $(line happy storage-end) < $(line happy users-start) && $(line happy auth-end) < $(line happy users-start) )) || fail 'users began before storage/auth finished'
 (( $(line happy users-end) < $(line happy deploy-start) && $(line happy build-end) < $(line happy deploy-start) && $(line happy python-end) < $(line happy deploy-start) )) || fail 'deploy began before all branches finished'
 grep -q '^pytest-end$' "$tmp/happy/events" || fail 'pytest not reached'
+grep -q 'selected_suite_seconds=0' "$tmp/happy/output" || fail 'unlimited lifecycle did not disable pytest deadline'
 (( $(line happy executable-check) < $(line happy pytest-end) )) || fail 'pytest ran before executable verification'
 forward_pid=$(cat "$tmp/happy/artifacts/port-forward.log.pid")
 for (( attempt=0; attempt<20; attempt++ )); do

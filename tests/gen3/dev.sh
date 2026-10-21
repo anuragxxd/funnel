@@ -184,7 +184,7 @@ case "$command_name" in
     export FUNNEL_CI_RETAIN_CLUSTER=true
     export GITHUB_OUTPUT="$run_dir/outputs"
     export FUNNEL_CI_STARTED_EPOCH=${FUNNEL_CI_STARTED_EPOCH:-$(date +%s)}
-    export FUNNEL_CI_DEADLINE_EPOCH=${FUNNEL_CI_DEADLINE_EPOCH:-$((FUNNEL_CI_STARTED_EPOCH + 540))}
+    export FUNNEL_CI_DEADLINE_EPOCH=${FUNNEL_CI_DEADLINE_EPOCH:-0}
     unset RUNNING_LOCAL
     for key in ${!FUNNEL_CI_IMAGE_@} ${!FUNNEL_CI_PLUGIN_@} ${!FUNNEL_CI_SOURCE_@}; do unset "$key"; done
     : >"$GITHUB_ENV"

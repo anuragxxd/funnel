@@ -92,7 +92,7 @@ for node in "$kind_cluster-control-plane" "$kind_cluster-worker"; do
   fi
   plugin_digest=$(docker exec "$node" ctr --namespace k8s.io images ls | awk -v image="$FUNNEL_CI_PLUGIN_IMAGE_REF" '$1 == image { digest = $3 } END { print digest }')
   plugin_config_id=$(docker exec "$node" crictl inspecti "$FUNNEL_CI_PLUGIN_IMAGE_REF" | jq -er '.status.id')
-  if [[ "$plugin_config_id" != "$FUNNEL_CI_PLUGIN_IMAGE_ID" || "$plugin_digest" != "$FUNNEL_CI_PLUGIN_IMAGE_DIGEST" ]]; then
+  if [[ "$plugin_config_id" != "$FUNNEL_CI_PLUGIN_IMAGE_CONFIG_ID" || "$plugin_digest" != "$FUNNEL_CI_PLUGIN_IMAGE_DIGEST" ]]; then
     printf 'Gen3 plugin image identity differs on Kind node %s\n' "$node" >&2
     exit 1
   fi

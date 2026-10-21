@@ -10,6 +10,7 @@ if [[ ! "$plugin_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 workspace=$(cd "$GITHUB_WORKSPACE" && pwd)
+PYTHONDONTWRITEBYTECODE=1 python3 "$workspace/tests/gen3/test-image-config-digest.py"
 source_sha=$(git -C "$workspace" rev-parse HEAD)
 reuse_cluster="${FUNNEL_CI_REUSE_CLUSTER:-false}"
 if [[ "$reuse_cluster" != true && "$reuse_cluster" != false ]]; then
@@ -437,6 +438,11 @@ if [[ "$plugin_revision" != "$plugin_source_sha" ]]; then
 fi
 cat "$setup_dir/build-timings"
 
+candidate_config_id=$(python3 "$workspace/tests/gen3/image-config-digest.py" "$image_archive" "$candidate_image")
+plugin_config_id_expected=$(python3 "$workspace/tests/gen3/image-config-digest.py" "$plugin_image_archive" "$plugin_image")
+printf 'candidate Docker ID=%s archived config=%s\n' "$candidate_image_id" "$candidate_config_id"
+printf 'plugin Docker ID=%s archived config=%s\n' "$plugin_image_id" "$plugin_config_id_expected"
+
 import_started=$(date +%s)
 node_digests=()
 node_config_ids=()
@@ -464,11 +470,11 @@ for node in "$kind_cluster-control-plane" "$kind_cluster-worker"; do
   printf 'node=%s image=%s digest=%s config_id=%s\n' "$node" "$candidate_image" "$digest" "$config_id"
   printf 'node=%s image=%s digest=%s config_id=%s\n' "$node" "$plugin_image" "$plugin_digest" "$plugin_config_id"
 done
-if [[ "${node_digests[0]}" != "${node_digests[1]}" || "${node_config_ids[0]}" != "$candidate_image_id" || "${node_config_ids[1]}" != "$candidate_image_id" ]]; then
+if [[ "${node_digests[0]}" != "${node_digests[1]}" || "${node_config_ids[0]}" != "$candidate_config_id" || "${node_config_ids[1]}" != "$candidate_config_id" ]]; then
   printf 'Kind nodes did not import the exact candidate image identity\n' >&2
   exit 1
 fi
-if [[ "${plugin_node_digests[0]}" != "${plugin_node_digests[1]}" || "${plugin_node_config_ids[0]}" != "$plugin_image_id" || "${plugin_node_config_ids[1]}" != "$plugin_image_id" ]]; then
+if [[ "${plugin_node_digests[0]}" != "${plugin_node_digests[1]}" || "${plugin_node_config_ids[0]}" != "$plugin_config_id_expected" || "${plugin_node_config_ids[1]}" != "$plugin_config_id_expected" ]]; then
   printf 'Kind nodes did not import the exact Gen3 plugin image identity\n' >&2
   exit 1
 fi

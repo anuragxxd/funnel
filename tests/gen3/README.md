@@ -1,3 +1,43 @@
+Run the CI lifecycle locally on native ARM64 Linux with Docker on an ARM host:
+
+```sh
+bash tests/gen3/docker-dev.sh build-runner   # Once: pinned Ubuntu 24.04 ARM64 tools
+bash tests/gen3/docker-dev.sh deps           # Once: pinned checkouts and Python dependencies
+bash tests/gen3/docker-dev.sh build          # Once: create the owned cluster
+bash tests/gen3/docker-dev.sh step images    # Once: cache the full pinned service images
+bash tests/gen3/docker-dev.sh ci             # Fresh owned fixture; full CI test selection
+```
+
+Use `RUNNING_LOCAL=true bash tests/gen3/docker-dev.sh test -k <expression>`
+after authentication has been initialized to reuse the saved test credentials.
+The complete `ci` and `resume` runs always initialize authentication again.
+
+Full OCI archives of the pinned Gen3 and CSI images are cached separately from
+container state. A fresh cluster restores Postgres, MinIO, and CSI first. Helm/database setup
+then overlaps restoration of the remaining application images; authentication
+starts once Arborist, Fence, and IndexD images are ready, while gateway image
+restoration continues. Deployment waits for all images to finish. Databases, users, and pods are created
+from scratch. GitHub restores
+the same image cache, keyed by architecture and fixture pins. A cache miss uses
+the original registries and saves the complete images after setup succeeds.
+Native helper and task-image archives are cached separately by architecture and
+recipe content, avoiding repeated builds and exports. Imported images must match
+both their architecture and recipe label.
+
+The GitHub job uses `ubuntu-24.04-arm`. The local runner uses four CPUs,
+16 GiB of memory, the same lifecycle script, four pytest workers, and the same
+service image digests. Docker Desktop supplies the local Linux kernel, so host
+kernels and networking still differ. No CPU emulation is used.
+
+After a failure, use `docker-dev.sh resume` to rerun the lifecycle against the
+retained fixture, or `docker-dev.sh step <phase>` to retry one bootstrap phase.
+Use `docker-dev.sh test -k <expression>` for a focused test. These commands copy
+and verify the current working files into a Linux volume; they do not read
+mutable source through a shared mount. Dependency caches and cluster state
+survive individual commands and `stop-runner`. Use `down` to delete only this
+runner's owned Kind cluster. Reserve at least 15 GiB in Docker's virtual disk
+before the first run.
+
 For local debugging, keep the environment between edits. `dev.sh` stores its
 kubeconfig, dependency caches, and per-command logs in ignored `.gen3-local/`.
 It only accesses the cluster recorded as owned by this checkout. Local runs use
@@ -12,9 +52,9 @@ filesystem free space alone does not establish Docker capacity.
 ```sh
 bash tests/gen3/dev.sh deps                  # Once: pinned test dependencies
 bash tests/gen3/dev.sh build                 # Once, then only for image changes
+bash tests/gen3/dev.sh step tools            # Once: native helper and executor images
 bash tests/gen3/dev.sh step prepare          # Once: database, auth, storage
 bash tests/gen3/dev.sh step deploy
-bash tests/gen3/dev.sh forward               # Leave running in another terminal
 bash tests/gen3/dev.sh test -k directory      # Rerun a focused test
 ```
 
@@ -22,7 +62,8 @@ After a bootstrap failure, edit the script and rerun the failing phase with
 `step database`, `step auth`, `step users`, or `step client`. These commands do
 not rebuild images or recreate Kind. `step values` checks configuration without
 deploying it. `status` and `logs deployment/fence-deployment` inspect retained
-resources. Cleanup happens only with the explicit `down` command.
+resources. Focused commands preserve the fixture; `ci` resets it, and `down`
+deletes it. Focused tests start and stop their own HTTP port-forward when needed.
 
 After a normal test run has initialized authentication fixtures, use
 `RUNNING_LOCAL=true bash tests/gen3/dev.sh test -k directory` for focused
@@ -30,8 +71,8 @@ retries that reuse those fixtures. Run the complete selection without
 `RUNNING_LOCAL` for final verification.
 
 Local image builds include uncommitted source and use content-derived image tags.
-A local run on an ARM host builds ARM images; CI still builds AMD64. Focused local
-passes are debugging evidence; the complete fresh CI run remains the final check.
+Local and hosted Gen3 runs build ARM64 images. Focused local passes are
+debugging evidence; require the complete fresh lifecycle for final verification.
 
 The Gen3 check has a ten-minute job limit and a five-to-six-minute runtime
 target. The budget includes dependency setup, image builds, cluster startup,
@@ -44,8 +85,12 @@ candidate build and two-node Kind cluster. Once Kind is ready, database/auth
 bootstrap and storage setup run concurrently with compilation. The runner uses
 bounded parallel image pulls and runs the upstream
 `gen3_workflow and not wip` test selection. The fixture uses one replica of each
-required Gen3 service and omits the unused Elasticsearch pod. It retains the
-real authentication services, PostgreSQL, MinIO, and Mountpoint CSI. Two
+required Gen3 service and omits the unused Elasticsearch pod. Java 21 and
+Nextflow 26.10.1 are checked before pytest. The original DICOM utility scripts
+and requirements are fetched from checksum-verified image layers and built
+for ARM64; the canary fixture uses native Ubuntu 24.04. The Gen3 AWS helper
+retains its upstream scripts with a native AWS CLI, checked during its build. These replace the two
+AMD64-only upstream test images without changing the workflow assertions. The fixture retains real authentication services, PostgreSQL, MinIO, and Mountpoint CSI. Two
 gateways share the same Funnel backend: `/workflows/` keeps the upstream Kind
 bearer-token mode, while `/ga4gh/tes/` validates real DPoP proofs. This keeps the
 task-token executor test enabled without changing ordinary client authentication.
@@ -86,8 +131,9 @@ time for a final snapshot and uploads artifacts after failure. Inspect the
 phase timings, pytest output, pod states, and image identity when a check fails.
 
 The upstream test suite still uses MinIO and the real Mountpoint S3 CSI driver.
-The setup script pins CSI chart
-2.8.0 and uses Linux/amd64 images mirrored in `quay.io/ohsu-comp-bio/funnel`
+The setup script pins CSI chart 2.8.0. Native ARM runs use the upstream
+ARM64 digests in `csi-images-arm64.yaml`. The legacy AMD64 configuration uses
+images mirrored in `quay.io/ohsu-comp-bio/funnel`
 under `ci-csi-*` tags. GitHub-hosted runners exhausted ECR's anonymous data
 allowance, so pulling directly from ECR failed before tests could start.
 

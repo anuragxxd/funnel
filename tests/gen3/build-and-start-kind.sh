@@ -13,6 +13,15 @@ workspace=$(cd "$GITHUB_WORKSPACE" && pwd)
 PYTHONDONTWRITEBYTECODE=1 python3 "$workspace/tests/test-image-config-digest.py"
 source_sha=$(git -C "$workspace" rev-parse HEAD)
 reuse_cluster="${FUNNEL_CI_REUSE_CLUSTER:-false}"
+build_only="${FUNNEL_CI_BUILD_ONLY:-false}"
+if [[ "$build_only" != true && "$build_only" != false ]]; then
+  printf 'FUNNEL_CI_BUILD_ONLY must be true or false\n' >&2
+  exit 1
+fi
+if [[ "$build_only" == true && "$reuse_cluster" != true ]]; then
+  printf 'Image-only builds require the explicit local state configuration\n' >&2
+  exit 1
+fi
 if [[ "$reuse_cluster" != true && "$reuse_cluster" != false ]]; then
   printf 'FUNNEL_CI_REUSE_CLUSTER must be true or false, got: %s\n' "$reuse_cluster" >&2
   exit 1
@@ -107,6 +116,12 @@ setup_dir=$(mktemp -d)
 kind_config="$setup_dir/kind.yaml"
 kind_log="$setup_dir/kind-create.log"
 builder_log="$setup_dir/go-builder-build.log"
+if [[ -n "${FUNNEL_CI_ARTIFACTS_DIR:-}" ]]; then
+  mkdir -p "$FUNNEL_CI_ARTIFACTS_DIR"
+  builder_log="$FUNNEL_CI_ARTIFACTS_DIR/image-build.log"
+  kind_log="$FUNNEL_CI_ARTIFACTS_DIR/kind-create.log"
+fi
+build_token="$source_sha-$$-$RANDOM"
 image_archive="$setup_dir/candidate-image.tar"
 plugin_archive="$setup_dir/gen3-plugin.tar.gz"
 plugin_context="$setup_dir/gen3-plugin"
@@ -122,6 +137,11 @@ kind_pid=""
 cleanup() {
   status=$?
   trap - EXIT
+  # Stop daemon-owned compiler containers before removing their bind mounts.
+  local_container_ids=$(timeout 5 docker ps -aq --filter "label=io.calypr.funnel.gen3-build=$build_token" 2>/dev/null || true)
+  for container_id in $local_container_ids; do
+    timeout 10 docker rm -f "$container_id" >/dev/null 2>&1 || true
+  done
   for pid in "$build_pid" "$kind_pid"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
@@ -136,7 +156,7 @@ cleanup() {
       tail -n 30 "$kind_log"
     fi
   fi
-  rm -rf "$setup_dir"
+  rm -rf "$setup_dir" || printf 'Retained build scratch directory: %s\n' "$setup_dir" >&2
   exit "$status"
 }
 trap cleanup EXIT
@@ -190,6 +210,10 @@ fi
 cat >"$kind_config" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+    discard_unpacked_layers = false
 nodes:
 - role: control-plane
   image: $kind_node_image
@@ -280,6 +304,27 @@ build_images() {
   local candidate_package_started candidate_package_finished plugin_build_started plugin_build_finished
   local funnel_module plugin_funnel_module
 
+  # Local repeats may reuse only images for these exact working-tree bytes.
+  # Hosted CI always builds its own candidate.
+  local cached_images
+  if [[ "$reuse_cluster" == true ]] && \
+    cached_images=$(docker image inspect "$candidate_image" "$plugin_image" 2>/dev/null) && \
+    printf '%s' "$cached_images" | jq -e \
+      --arg arch "$target_arch" --arg source "$source_id" \
+      --arg commit "$source_sha" --arg plugin "$plugin_source_sha" '
+        length == 2 and
+        all(.[]; .Os == "linux" and .Architecture == $arch and
+          .Config.Labels["io.ohsu-comp-bio.funnel.source-id"] == $source) and
+        .[0].Config.Labels["org.opencontainers.image.revision"] == $commit and
+        .[1].Config.Labels["org.opencontainers.image.revision"] == $plugin
+      ' >/dev/null; then
+    docker save "$candidate_image" >"$image_archive"
+    docker save "$plugin_image" >"$plugin_image_archive"
+    printf 'candidate_images_reused=true\n' >"$setup_dir/build-timings"
+    printf 'Reusing exact local source images: %s %s\n' "$candidate_image" "$plugin_image"
+    return
+  fi
+
   builder_started=$(date +%s)
   DOCKER_BUILDKIT=1 docker build --platform "$build_platform" \
     --file "$builder_dockerfile" --target go-builder \
@@ -292,6 +337,7 @@ build_images() {
 
   candidate_compile_started=$(date +%s)
   docker run --rm --platform "$build_platform" \
+    --label "io.calypr.funnel.gen3-build=$build_token" \
     --volume "$build_context:/workspace" \
     --volume "$go_build_cache:/root/.cache/go-build" \
     --volume "$go_module_cache:/go/pkg/mod" \
@@ -340,6 +386,7 @@ PY
 
   plugin_build_started=$(date +%s)
   docker run --rm --platform "$build_platform" \
+    --label "io.calypr.funnel.gen3-build=$build_token" \
     --volume "$build_context:/workspace/funnel:ro" \
     --volume "$plugin_context:/workspace/plugin" \
     --volume "$plugin_output:/out" \
@@ -365,6 +412,7 @@ PY
     --file "$builder_dockerfile" --target gen3-plugin \
     --build-arg "GO_BUILDER_IMAGE=$go_builder_image" \
     --label "org.opencontainers.image.revision=$plugin_source_sha" \
+    --label "io.ohsu-comp-bio.funnel.source-id=$source_id" \
     --label "org.opencontainers.image.source=https://github.com/calypr/funnel-gen3-plugin" \
     --tag "$plugin_image" "$build_context"
   plugin_build_finished=$(date +%s)
@@ -382,6 +430,13 @@ PY
 
 build_images >"$builder_log" 2>&1 &
 build_pid=$!
+if [[ "$build_only" == true ]]; then
+  wait "$build_pid"
+  build_pid=""
+  cat "$setup_dir/build-timings"
+  printf 'Built local images without creating or loading a Kind cluster: %s %s\n' "$candidate_image" "$plugin_image"
+  exit 0
+fi
 kind_started=$(date +%s)
 {
   if [[ "$reuse_cluster" == true ]]; then
@@ -407,10 +462,19 @@ if [[ "$cluster_reused" != true ]]; then
     mv "$marker_tmp" "$ownership_marker"
   fi
 fi
+printf 'FUNNEL_CI_CLUSTER_OWNED=true\n' >>"$GITHUB_ENV"
+auth_images_ready_file=${FUNNEL_CI_AUTH_IMAGES_READY_FILE:-$state_dir/auth-images-ready}
+rm -f "$auth_images_ready_file"
+printf 'FUNNEL_CI_AUTH_IMAGES_READY_FILE=%s\n' "$auth_images_ready_file" >>"$GITHUB_ENV"
+python3 "$workspace/tests/gen3/cache-fixture-images.py" restore-bootstrap
 cluster_ready=$(date +%s)
 kind_ready_file=${FUNNEL_CI_KIND_READY_FILE:-$state_dir/kind-ready}
 printf 'cluster=%s\nkubeconfig=%s\n' "$kind_cluster" "$kubeconfig" >"$kind_ready_file.tmp.$$"
 mv "$kind_ready_file.tmp.$$" "$kind_ready_file"
+python3 "$workspace/tests/gen3/cache-fixture-images.py" restore-auth
+touch "$auth_images_ready_file"
+python3 "$workspace/tests/gen3/cache-fixture-images.py" restore-services
+
 
 if ! wait "$build_pid"; then
   build_pid=""

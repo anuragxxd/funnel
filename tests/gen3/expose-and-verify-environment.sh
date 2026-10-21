@@ -175,10 +175,7 @@ cat "$artifacts_dir/gen3-image-identity.json"
 
 setup_dir=$(mktemp -d)
 trap 'rm -rf "$setup_dir"' EXIT
-curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/uc-cdis/gen3-workflow/500b11d7b132518522480fda9abaa1c5cd9a73e2/.github/workflows/integration_tests_on_kind/ci_expose_kind_cluster.sh \
-  --output "$setup_dir/ci_expose_kind_cluster.sh"
-bash "$setup_dir/ci_expose_kind_cluster.sh"
+bash "$GITHUB_WORKSPACE/tests/gen3/start-port-forward.sh" "$NAMESPACE" "$artifacts_dir/port-forward.log"
 
 # Detect a disabled or misrouted DPoP gateway before starting executor tests.
 dpop_status=$(curl --silent --show-error --max-time 5 \

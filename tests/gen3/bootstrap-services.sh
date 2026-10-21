@@ -140,7 +140,7 @@ secret_field() {
 
 provision_database() {
   local pg_pod service service_user service_pass service_db ready
-  "$kubectl_bin" -n "$namespace" wait --for=condition=Ready pod \
+  "$kubectl_bin" -n "$namespace" rollout status statefulset \
     -l "app.kubernetes.io/name=postgresql,app.kubernetes.io/instance=$namespace" \
     --timeout="${GEN3_DB_TIMEOUT:-180s}"
   pg_pod=$("$kubectl_bin" -n "$namespace" get pods \
@@ -198,6 +198,10 @@ wait_job_fail_fast() {
 
 activate_auth() {
   local deployment
+  if [[ -n "${FUNNEL_CI_AUTH_IMAGES_READY_FILE:-}" ]]; then
+    log "waiting for authentication images before activating services"
+    while [[ ! -f "$FUNNEL_CI_AUTH_IMAGES_READY_FILE" ]]; do sleep 1; done
+  fi
   for deployment in arborist-deployment indexd-deployment fence-deployment presigned-url-fence-deployment; do
     "$kubectl_bin" -n "$namespace" get deployment "$deployment" >/dev/null 2>&1 || continue
     "$kubectl_bin" -n "$namespace" scale "deployment/$deployment" --replicas=1
@@ -316,6 +320,8 @@ case "$command_name" in
       bash "$script_dir/wait-deployment-ready.sh" "$namespace" "$deployment" "${GEN3_DEPLOY_TIMEOUT_SECONDS:-120}"
     done
     ;;
+  images) python3 "$script_dir/cache-fixture-images.py" seed ;;
+  tools) bash "$script_dir/prepare-test-tools.sh" ;;
   storage) "$script_dir/setup-environment.sh" ;;
   install) install_release_once ;;
   database) provision_database ;;
@@ -339,7 +345,7 @@ case "$command_name" in
     ;;
   deploy) deploy_candidate ;;
   *)
-    printf 'usage: %s {values|render|storage|install|database|auth|client|users|prepare|deploy|dpop}\n' "$0" >&2
+    printf 'usage: %s {values|render|images|tools|storage|install|database|auth|client|users|prepare|deploy|dpop}\n' "$0" >&2
     exit 2
     ;;
 esac

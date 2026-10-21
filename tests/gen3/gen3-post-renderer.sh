@@ -23,6 +23,7 @@ export FUNNEL_CI_IMAGE_REF FUNNEL_CI_PLUGIN_IMAGE_REF
 fixture_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 FUNNEL_CI_AWSHELPER_IMAGE=$(yq -r ".global.awshelper_container_image" "$fixture_dir/values-ci.yaml")
 export FUNNEL_CI_AWSHELPER_IMAGE
+export FUNNEL_CI_NATIVE_AWSHELPER_IMAGE=funnel-gen3-awshelper:ci
 
 render_dir=$(mktemp -d)
 trap 'rm -rf "$render_dir"' EXIT
@@ -127,6 +128,22 @@ EOF
     exit 1
   fi
 fi
+
+# Freeze public fixture services while leaving candidate and executor images intact.
+if [[ -n "$FUNNEL_CI_PLUGIN_IMAGE_REF" ]]; then
+yq eval '
+  (.. | select(tag == "!!map" and has("image")) |
+    select(.image == strenv(FUNNEL_CI_AWSHELPER_IMAGE))) |=
+      (.image = strenv(FUNNEL_CI_NATIVE_AWSHELPER_IMAGE) | .imagePullPolicy = "Never")
+' -i "$output"
+fi
+
+FIXTURE_IMAGE_LOCK="$fixture_dir/fixture-images.json" yq eval '
+  load(strenv(FIXTURE_IMAGE_LOCK)).images as $images |
+  (.. | select(tag == "!!map" and has("image")) | .image | select(tag == "!!str")) |=
+    (. as $reference | $images[$reference].reference // $reference)
+' "$output" >"$render_dir/pinned.yaml"
+mv "$render_dir/pinned.yaml" "$output"
 
 actual_image=$(yq eval-all -r 'select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.containers[] | select(.name == "funnel") | .image' "$output")
 actual_plugin=$(yq eval-all -r 'select(.kind == "Deployment" and .metadata.name == "funnel-server") | .spec.template.spec.initContainers[] | select(.name == "plugin") | .image' "$output")

@@ -12,6 +12,7 @@ fixture() {
   mkdir -p "$f/bin" "$f/work/gen3-code-vigil/gen3-integration-tests" "$f/work/gen3-gitops-ci/ci/default/values" "$f/work/tests/gen3" "$f/state" "$f/artifacts"
   cp "$src/run-integration.sh" "$f/run-integration.sh"
   cp "$src/run-command.py" "$src/redact_logs.py" "$f/"
+  printf '#!/bin/sh\nexit 0\n' >"$f/describe-environment.sh"
   chmod +x "$f/run-integration.sh"
   ln -s "$py" "$f/bin/python3"
   echo '#!/bin/sh
@@ -23,6 +24,10 @@ EOF
   echo '#!/bin/sh
 echo v4.3.1' >"$f/bin/helm"
   for x in docker aws curl jq yq; do printf '#!/bin/sh\nexit 0\n' >"$f/bin/$x"; done
+  cat >"$f/bin/java" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'openjdk version "21.0.12"' >&2
+EOF
   cat >"$f/bin/kubectl" <<'EOF'
 #!/bin/sh
 [ "$1" = --kubeconfig ] && shift 2
@@ -34,6 +39,9 @@ echo kind-delete >>"$EVENTS"' >"$f/bin/kind"
 #!/bin/bash
 case "$*" in *pytest*) echo pytest-end >>"$EVENTS";; *poetry*) echo python-start >>"$EVENTS"; sleep 4; echo python-end >>"$EVENTS";; esac
 EOF
+  printf '#!/bin/sh\nuv poetry install\n' >"$f/prepare-python.sh"
+  printf '#!/bin/sh\nexit 0\n' >"$f/prepare-test-tools.sh"
+  echo "pass" >"$f/cache-fixture-images.py"
   echo "pass" >"$f/configure-tests.py"
   cat >"$f/build-and-start-kind.sh" <<'EOF'
 #!/bin/bash
@@ -75,8 +83,12 @@ users) event users-start; sleep 1; event users-end;;
 deploy) event deploy-start; echo deploy-end >>"$EVENTS";;
 esac
 EOF
-  echo '#!/bin/bash
-echo expose >>"$EVENTS"' >"$f/expose-and-verify-environment.sh"
+  cat >"$f/expose-and-verify-environment.sh" <<'EOF'
+#!/bin/bash
+echo expose >>"$EVENTS"
+sleep 600 </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$!" >"$FUNNEL_CI_ARTIFACTS_DIR/port-forward.log.pid"
+EOF
   cat >"$f/run-tests.sh" <<'EOF'
 #!/bin/bash
 shift 2
@@ -111,7 +123,13 @@ run happy 120
 (( $(line happy storage-end) < $(line happy users-start) && $(line happy auth-end) < $(line happy users-start) )) || fail 'users began before storage/auth finished'
 (( $(line happy users-end) < $(line happy deploy-start) && $(line happy build-end) < $(line happy deploy-start) && $(line happy python-end) < $(line happy deploy-start) )) || fail 'deploy began before all branches finished'
 grep -q '^pytest-end$' "$tmp/happy/events" || fail 'pytest not reached'
-echo 'PASS: lifecycle DAG waits and overlaps correctly'
+forward_pid=$(cat "$tmp/happy/artifacts/port-forward.log.pid")
+for (( attempt=0; attempt<20; attempt++ )); do
+  kill -0 "$forward_pid" 2>/dev/null || break
+  sleep 0.1
+done
+! kill -0 "$forward_pid" 2>/dev/null || fail 'owned port-forward survived lifecycle completion'
+echo 'PASS: lifecycle DAG waits, overlaps, and cleans its owned port-forward'
 fixture branch-fail
 started=$(date +%s)
 run branch-fail 120
@@ -140,3 +158,13 @@ status=$?
 set -e
 [[ $status == 124 ]] || fail "deadline returned $status, expected 124"
 echo 'PASS: command deadline returns 124'
+
+fixture wrong-java
+cat >"$f/bin/java" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'openjdk version "17.0.1"' >&2
+EOF
+run wrong-java 120
+[[ $(cat "$tmp/wrong-java/status") == 2 ]] || fail 'unsupported Java did not fail preflight'
+! grep -q '^build-start$' "$tmp/wrong-java/events" || fail 'build started without Java 21'
+echo 'PASS: unsupported Java fails before any environment build'

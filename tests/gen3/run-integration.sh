@@ -83,9 +83,9 @@ run_test_phase() {
   GEN3_TEST_MAX_SECONDS="$test_limit" \
     python3 "$script_dir/run-command.py" "$workspace" "$artifacts_dir/pytest-wrapper.log" \
       "$outer_limit" bash "$script_dir/run-tests.sh" "$test_root" "$artifacts_dir" \
-        uv tool run --from poetry==2.2.1 poetry run pytest \
+        uv tool run --from poetry==2.2.1 poetry run pytest "$test_root/tests" \
         --video=retain-on-failure \
-        -n logical \
+        -n "${FUNNEL_CI_PYTEST_WORKERS:-4}" \
         --maxfail=1 --max-worker-restart=0 \
         -m 'gen3_workflow and not wip' \
         --alluredir "$test_root/allure-results" \
@@ -259,12 +259,18 @@ preflight() {
     REPO REPO_FN BRANCH PR_NUM COMMIT_SHA RUN_NUM RUN_ID ATTEMPT_NUM GH_WORKSPACE
     CI_ENV HELM_BRANCH QUAY_ORG QUAY_REPO EXTERNAL_TO_CTDS HOSTNAME HOSTNAME_PROTOCOL
   )
-  for command_name in awk aws bash curl docker git helm jq kind kubectl python python3 timeout tee uv yq; do
+  for command_name in awk aws bash curl docker git helm java jq kind kubectl python python3 timeout tee uv yq; do
     command -v "$command_name" >/dev/null 2>&1 || {
       printf 'missing required command: %s\n' "$command_name" >&2
       return 2
     }
   done
+  local java_version
+  java_version=$(java -version 2>&1) || { printf 'Java 21 is required by Nextflow\n' >&2; return 2; }
+  [[ "$java_version" == *'version "21.'* ]] || {
+    printf 'Java 21 is required by Nextflow; found: %s\n' "$java_version" >&2
+    return 2
+  }
   for variable_name in "${required_environment[@]}"; do
     [[ -n "${!variable_name:-}" ]] || {
       printf 'required workflow input is empty: %s\n' "$variable_name" >&2
@@ -364,6 +370,10 @@ preflight() {
     printf 'Gen3 integration tests require Python 3.13\n' >&2
     return 2
   }
+  if [[ -n "${GEN3_PYTHON_VERSION:-}" && "$(python --version 2>&1)" != "Python $GEN3_PYTHON_VERSION" ]]; then
+    printf 'Python patch version differs from the shared workflow pin %s\n' "$GEN3_PYTHON_VERSION" >&2
+    return 2
+  fi
   [[ "$(helm version --template '{{.Version}}')" == v4.3.1 ]] || {
     printf 'Gen3 integration tests require Helm v4.3.1\n' >&2
     return 2
@@ -396,13 +406,20 @@ finish() {
   exit_status=$?
   trap - EXIT
   stop_parallel_phases
+  local forward_pid_file="$artifacts_dir/port-forward.log.pid" forward_pid
+  if [[ -f "$forward_pid_file" ]]; then
+    read -r forward_pid <"$forward_pid_file"
+    if [[ "$forward_pid" =~ ^[0-9]+$ ]]; then kill -TERM "$forward_pid" 2>/dev/null || true; fi
+  fi
   load_hook_environment || true
   if (( exit_status != 0 )); then
     if (( test_runner_started == 0 )) && [[ "${FUNNEL_CI_CLUSTER_OWNED:-}" == true ]]; then
       capture_cluster_diagnostics
     fi
   fi
-  if [[ "${FUNNEL_CI_CLUSTER_OWNED:-}" == true ]] && command -v kind >/dev/null 2>&1; then
+  if [[ "${FUNNEL_CI_RETAIN_CLUSTER:-false}" == true && "${FUNNEL_CI_REUSE_CLUSTER:-false}" == true ]]; then
+    log "retaining the owned local fixture for diagnosis: ${FUNNEL_CI_KIND_CLUSTER_NAME}"
+  elif [[ "${FUNNEL_CI_CLUSTER_OWNED:-}" == true ]] && command -v kind >/dev/null 2>&1; then
     timeout --signal=TERM --kill-after=3s 20s kind delete cluster \
       --name "${FUNNEL_CI_KIND_CLUSTER_NAME:-kind-cluster}" \
       >>"$lifecycle_log" 2>&1 || true
@@ -427,12 +444,12 @@ printf 'started_epoch\t%s\ndeadline_epoch\t%s\n' \
   "$FUNNEL_CI_STARTED_EPOCH" "$FUNNEL_CI_DEADLINE_EPOCH" >"$artifacts_dir/run-window.tsv"
 
 run_phase preflight bash "$script_dir/run-integration.sh" --preflight || exit $?
+run_phase environment bash "$script_dir/describe-environment.sh" || exit $?
 run_phase configure-tests python3 "$script_dir/configure-tests.py" "$test_root" || exit $?
 mkdir -p "$HOME/.gen3" "$test_root/logs" "$test_root/output" "$test_root/allure-results"
 
 start_parallel_phase python-dependencies "$bootstrap_log" "$bootstrap_status_file" \
-  uv tool run --python "$(command -v python)" --from poetry==2.2.1 poetry \
-  -C "$test_root" install --only main --no-root --no-interaction || exit $?
+  bash "$script_dir/prepare-python.sh" "$test_root" || exit $?
 start_parallel_phase build-kind "$build_log" "$build_status_file" \
   bash "$script_dir/build-and-start-kind.sh" || exit $?
 wait_for_kind_ready || { status=$?; stop_parallel_phases; exit "$status"; }
@@ -442,11 +459,13 @@ load_hook_environment
   exit 2
 }
 
+start_parallel_phase test-tools "$artifacts_dir/test-tools.log" "$artifacts_dir/test-tools.exit" \
+  bash "$script_dir/prepare-test-tools.sh" || exit $?
 start_parallel_phase gen3-storage "$artifacts_dir/gen3-storage.log" "$artifacts_dir/gen3-storage.exit" \
   env FUNNEL_CI_HELM_PROFILE=storage bash "$script_dir/setup-environment.sh" || exit $?
 start_parallel_phase gen3-auth "$artifacts_dir/gen3-auth.log" "$artifacts_dir/gen3-auth.exit" \
   env FUNNEL_CI_HELM_PROFILE=bootstrap-auth bash "$script_dir/bootstrap-services.sh" prepare-auth || exit $?
-wait_for_named_phases gen3-storage gen3-auth || { status=$?; stop_parallel_phases; exit "$status"; }
+wait_for_named_phases gen3-storage gen3-auth test-tools || { status=$?; stop_parallel_phases; exit "$status"; }
 load_hook_environment
 start_parallel_phase gen3-users "$artifacts_dir/gen3-users.log" "$artifacts_dir/gen3-users.exit" \
   env FUNNEL_CI_HELM_PROFILE=bootstrap-users bash "$script_dir/bootstrap-services.sh" users || exit $?
@@ -461,4 +480,5 @@ run_phase expose-gen3 bash "$script_dir/expose-and-verify-environment.sh" || exi
 load_hook_environment
 export PYTEST_ADDOPTS=${PYTEST_ADDOPTS:-}
 
+run_phase cache-fixtures python3 "$script_dir/cache-fixture-images.py" save || exit $?
 run_test_phase || exit $?

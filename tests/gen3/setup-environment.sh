@@ -11,12 +11,14 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 helm_bin=${HELM_BIN:-helm}
 kubectl_bin=${KUBECTL_BIN:-kubectl}
 aws_bin=${AWS_BIN:-aws}
-minio_image=${FUNNEL_CI_MINIO_IMAGE:-quay.io/cdis/minio:chainguard-latest-2026-09-25}
+minio_image=${FUNNEL_CI_MINIO_IMAGE:-$(jq -er '.images["quay.io/cdis/minio:chainguard-latest-2026-09-25"].reference' "$script_dir/fixture-images.json")}
 
 command -v "$helm_bin" >/dev/null || { printf 'helm is required\n' >&2; exit 2; }
 command -v "$kubectl_bin" >/dev/null || { printf 'kubectl is required\n' >&2; exit 2; }
 command -v "$aws_bin" >/dev/null || { printf 'aws CLI is required to seed the local Gen3 user fixture\n' >&2; exit 2; }
-[[ -f "$script_dir/csi-images.yaml" ]] || { printf 'CSI image pins are missing\n' >&2; exit 2; }
+csi_images="$script_dir/csi-images.yaml"
+if [[ "${FUNNEL_CI_BUILD_PLATFORM:-}" == linux/arm64 ]]; then csi_images="$script_dir/csi-images-arm64.yaml"; fi
+[[ -f "$csi_images" ]] || { printf 'CSI image pins are missing\n' >&2; exit 2; }
 
 export KUBECONFIG
 state_dir=$(cd "$FUNNEL_CI_STATE_DIR" && pwd)
@@ -129,7 +131,7 @@ if [[ ! -f "$chart_dir/aws-mountpoint-s3-csi-driver-2.8.0.tgz" ]]; then
 fi
 "$helm_bin" upgrade --install aws-mountpoint-s3-csi-driver \
   "$chart_dir/aws-mountpoint-s3-csi-driver-2.8.0.tgz" \
-  --namespace kube-system --values "$script_dir/csi-images.yaml" \
+  --namespace kube-system --values "$csi_images" \
   --wait --timeout 180s
 
 "$kubectl_bin" -n "$NAMESPACE" wait --for=condition=Ready pod/minio --timeout=90s

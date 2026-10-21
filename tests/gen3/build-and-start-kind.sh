@@ -10,7 +10,7 @@ if [[ ! "$plugin_source_sha" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 workspace=$(cd "$GITHUB_WORKSPACE" && pwd)
-PYTHONDONTWRITEBYTECODE=1 python3 "$workspace/tests/gen3/test-image-config-digest.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$workspace/tests/test-image-config-digest.py"
 source_sha=$(git -C "$workspace" rev-parse HEAD)
 reuse_cluster="${FUNNEL_CI_REUSE_CLUSTER:-false}"
 if [[ "$reuse_cluster" != true && "$reuse_cluster" != false ]]; then
@@ -438,8 +438,8 @@ if [[ "$plugin_revision" != "$plugin_source_sha" ]]; then
 fi
 cat "$setup_dir/build-timings"
 
-candidate_config_id=$(python3 "$workspace/tests/gen3/image-config-digest.py" "$image_archive" "$candidate_image")
-plugin_config_id_expected=$(python3 "$workspace/tests/gen3/image-config-digest.py" "$plugin_image_archive" "$plugin_image")
+candidate_config_id=$(python3 "$workspace/tests/image-config-digest.py" "$image_archive" "$candidate_image")
+plugin_config_id_expected=$(python3 "$workspace/tests/image-config-digest.py" "$plugin_image_archive" "$plugin_image")
 printf 'candidate Docker ID=%s archived config=%s\n' "$candidate_image_id" "$candidate_config_id"
 printf 'plugin Docker ID=%s archived config=%s\n' "$plugin_image_id" "$plugin_config_id_expected"
 

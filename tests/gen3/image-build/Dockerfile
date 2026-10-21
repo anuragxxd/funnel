@@ -19,4 +19,6 @@ RUN wget -qO /tmp/nerdctl.tgz \
 
 FROM alpine:3.22 AS gen3-plugin
 
-COPY authorizer /app/build/plugins/authorizer
+COPY authorizer-binary /app/build/plugins/authorizer
+
+RUN test -f /app/build/plugins/authorizer && test -x /app/build/plugins/authorizer

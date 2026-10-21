@@ -54,11 +54,19 @@ jobs:
         run: |
           started_epoch=$(date +%s)
           deadline_epoch=$((started_epoch + 540))
+          state_dir="$RUNNER_TEMP/funnel-gen3-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$state_dir"
+          rm -f "$state_dir/kind-ready"
           printf '%s\n' "$started_epoch" > "$RUNNER_TEMP/funnel-gen3-started-epoch"
           printf '%s\n' "$deadline_epoch" > "$RUNNER_TEMP/funnel-gen3-deadline-epoch"
           {
             printf 'FUNNEL_CI_STARTED_EPOCH=%s\n' "$started_epoch"
             printf 'FUNNEL_CI_DEADLINE_EPOCH=%s\n' "$deadline_epoch"
+            printf 'FUNNEL_CI_STATE_DIR=%s\n' "$state_dir"
+            printf 'FUNNEL_CI_KUBECONFIG=%s/kubeconfig\n' "$state_dir"
+            printf 'KUBECONFIG=%s/kubeconfig\n' "$state_dir"
+            printf 'FUNNEL_CI_KIND_CLUSTER_NAME=kind-cluster\n'
+            printf 'FUNNEL_CI_KIND_READY_FILE=%s/kind-ready\n' "$state_dir"
             printf 'FUNNEL_CI_GO_CACHE_DIR=%s/funnel-gen3-go-cache\n' "$RUNNER_TEMP"
             printf 'POETRY_VIRTUALENVS_PATH=%s/gen3-poetry-venvs\n' "$RUNNER_TEMP"
             printf 'POETRY_CACHE_DIR=%s/gen3-poetry-cache\n' "$RUNNER_TEMP"

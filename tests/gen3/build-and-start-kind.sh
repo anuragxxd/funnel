@@ -11,19 +11,93 @@ fi
 
 workspace=$(cd "$GITHUB_WORKSPACE" && pwd)
 source_sha=$(git -C "$workspace" rev-parse HEAD)
-candidate_image="quay.io/ohsu-comp-bio/funnel:ci-${source_sha:0:12}"
-plugin_image="quay.io/ohsu-comp-bio/funnel-gen3-plugin:ci-${source_sha:0:12}-${plugin_source_sha:0:12}"
+reuse_cluster="${FUNNEL_CI_REUSE_CLUSTER:-false}"
+if [[ "$reuse_cluster" != true && "$reuse_cluster" != false ]]; then
+  printf 'FUNNEL_CI_REUSE_CLUSTER must be true or false, got: %s\n' "$reuse_cluster" >&2
+  exit 1
+fi
+if [[ "$reuse_cluster" == true ]]; then
+  : "${FUNNEL_CI_STATE_DIR:?local cluster reuse requires an explicit FUNNEL_CI_STATE_DIR}"
+  : "${FUNNEL_CI_KUBECONFIG:?local cluster reuse requires an explicit FUNNEL_CI_KUBECONFIG}"
+  : "${FUNNEL_CI_KIND_CLUSTER_NAME:?local cluster reuse requires an explicit FUNNEL_CI_KIND_CLUSTER_NAME}"
+  [[ "$FUNNEL_CI_STATE_DIR" == /* && "$FUNNEL_CI_KUBECONFIG" == /* ]] || {
+    printf 'local state directory and kubeconfig paths must be absolute\n' >&2
+    exit 1
+  }
+  source_id=$(python3 - "$workspace" "$FUNNEL_CI_STATE_DIR" <<'PY'
+from pathlib import Path
+import hashlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+
+workspace = Path(sys.argv[1]).resolve()
+state_dir = Path(sys.argv[2]).resolve()
+state_relative = None
+try:
+    state_relative = state_dir.relative_to(workspace)
+except ValueError:
+    pass
+paths = subprocess.check_output(
+    ["git", "-C", str(workspace), "ls-files", "-co", "--exclude-standard", "-z"]
+).split(b"\0")
+digest = hashlib.sha256()
+class _HashWriter:
+    def __init__(self, target):
+        self.target = target
+    def write(self, data):
+        self.target.update(data)
+        return len(data)
+
+for raw_path in sorted(item for item in paths if item):
+    relative = os.fsdecode(raw_path)
+    path = workspace / relative
+    if state_relative is not None and (relative == str(state_relative) or relative.startswith(str(state_relative) + os.sep)):
+        continue
+    if not path.exists() and not path.is_symlink():
+        continue
+    info = path.lstat()
+    digest.update(relative.encode("utf-8", "surrogateescape") + b"\0")
+    digest.update(str(stat.S_IMODE(info.st_mode)).encode() + b"\0")
+    if stat.S_ISLNK(info.st_mode):
+        digest.update(b"link\0" + os.readlink(path).encode("utf-8", "surrogateescape"))
+    elif stat.S_ISREG(info.st_mode):
+        digest.update(b"file\0" + str(info.st_size).encode() + b"\0")
+        with path.open("rb") as source:
+            shutil.copyfileobj(source, _HashWriter(digest))
+    elif stat.S_ISDIR(info.st_mode):
+        digest.update(b"dir\0")
+    else:
+        digest.update(b"other\0")
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+  )
+  if [[ ! "$source_id" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'could not calculate a valid local source identity: %s\n' "$source_id" >&2
+    exit 1
+  fi
+  candidate_image="quay.io/ohsu-comp-bio/funnel:local-${source_id}"
+  plugin_image="quay.io/ohsu-comp-bio/funnel-gen3-plugin:local-${source_id}-${plugin_source_sha:0:12}"
+else
+  source_id="$source_sha"
+  candidate_image="quay.io/ohsu-comp-bio/funnel:ci-${source_sha:0:12}"
+  plugin_image="quay.io/ohsu-comp-bio/funnel-gen3-plugin:ci-${source_sha:0:12}-${plugin_source_sha:0:12}"
+fi
 build_platform="${FUNNEL_CI_BUILD_PLATFORM:-linux/amd64}"
 if [[ ! "$build_platform" =~ ^linux/(amd64|arm64)$ ]]; then
   printf 'unsupported Gen3 build platform: %s\n' "$build_platform" >&2
   exit 1
 fi
 target_arch="${build_platform#linux/}"
-kind_cluster=kind-cluster
+kind_cluster="${FUNNEL_CI_KIND_CLUSTER_NAME:-kind-cluster}"
 kind_node_image='kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661'
 task_id="${GITHUB_RUN_ID:-local-${source_sha:0:12}}-${GITHUB_RUN_ATTEMPT:-1}"
 state_dir="${FUNNEL_CI_STATE_DIR:-${RUNNER_TEMP:-/tmp}/funnel-gen3-${task_id}}"
-kubeconfig="$state_dir/kubeconfig"
+kubeconfig="${FUNNEL_CI_KUBECONFIG:-$state_dir/kubeconfig}"
+ownership_marker="$state_dir/kind-cluster-ownership"
 go_cache_dir="${FUNNEL_CI_GO_CACHE_DIR:-${RUNNER_TEMP:-/tmp}/funnel-gen3-go-cache}"
 go_build_cache="$go_cache_dir/build"
 go_module_cache="$go_cache_dir/module"
@@ -66,15 +140,50 @@ cleanup() {
 }
 trap cleanup EXIT
 
-printf 'source_commit=%s\ncandidate_image=%s\nbuild_platform=%s\n' "$source_sha" "$candidate_image" "$build_platform"
+printf 'source_commit=%s\nsource_id=%s\ncandidate_image=%s\nbuild_platform=%s\n' "$source_sha" "$source_id" "$candidate_image" "$build_platform"
 printf 'gen3_plugin_commit=%s\ngen3_plugin_image=%s\n' "$plugin_source_sha" "$plugin_image"
 printf 'go_cache_dir=%s\nkubeconfig=%s\nkind_node_image=%s\n' "$go_cache_dir" "$kubeconfig" "$kind_node_image"
 export KUBECONFIG="$kubeconfig"
 printf 'FUNNEL_CI_KUBECONFIG=%s\n' "$kubeconfig" >>"$GITHUB_ENV"
 
+cluster_exists=false
 if kind get clusters | awk -v name="$kind_cluster" '$0 == name { found = 1 } END { exit !found }'; then
-  printf 'Kind cluster %s already exists; refusing to reuse or change it\n' "$kind_cluster" >&2
-  exit 1
+  cluster_exists=true
+fi
+if [[ "$reuse_cluster" == true ]]; then
+  if [[ -f "$ownership_marker" ]]; then
+    expected_marker=$(printf 'workspace=%s\ncluster=%s\nkubeconfig=%s\n' "$workspace" "$kind_cluster" "$(cd "$(dirname "$kubeconfig")" && pwd)/$(basename "$kubeconfig")")
+    if [[ "$(cat "$ownership_marker")" != "$expected_marker" ]]; then
+      printf 'Kind ownership marker in %s does not match workspace, cluster, and explicit kubeconfig\n' "$state_dir" >&2
+      exit 1
+    fi
+    if [[ "$cluster_exists" != true ]]; then
+      printf 'owned Kind cluster %s is missing\n' "$kind_cluster" >&2
+      exit 1
+    fi
+    if [[ ! -f "$kubeconfig" ]]; then
+      printf 'owned kubeconfig is missing: %s\n' "$kubeconfig" >&2
+      exit 1
+    fi
+    configured_context=$(KUBECONFIG="$kubeconfig" kubectl config current-context 2>/dev/null || true)
+    configured_cluster=$(KUBECONFIG="$kubeconfig" kubectl config view --minify -o jsonpath='{.contexts[0].context.cluster}' 2>/dev/null || true)
+    if [[ "$configured_context" != "kind-$kind_cluster" || "$configured_cluster" != "kind-$kind_cluster" ]]; then
+      printf 'explicit kubeconfig %s does not target Kind cluster %s\n' "$kubeconfig" "$kind_cluster" >&2
+      exit 1
+    fi
+    cluster_reused=true
+  elif [[ "$cluster_exists" == true ]]; then
+    printf 'Kind cluster %s exists without the ownership marker in %s; refusing to reuse it\n' "$kind_cluster" "$state_dir" >&2
+    exit 1
+  else
+    cluster_reused=false
+  fi
+else
+  if [[ "$cluster_exists" == true ]]; then
+    printf 'Kind cluster %s already exists; refusing to reuse or change it\n' "$kind_cluster" >&2
+    exit 1
+  fi
+  cluster_reused=false
 fi
 
 cat >"$kind_config" <<EOF
@@ -83,12 +192,57 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
   image: $kind_node_image
+  kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    serializeImagePulls: false
+    maxParallelImagePulls: 4
 - role: worker
   image: $kind_node_image
+  labels:
+    role: workflow
 EOF
 
 mkdir -p "$build_context"
-git -C "$workspace" archive --format=tar HEAD | tar -xf - -C "$build_context"
+if [[ "$reuse_cluster" == true ]]; then
+  python3 - "$workspace" "$FUNNEL_CI_STATE_DIR" "$build_context" <<'PY'
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
+
+workspace, state_dir, destination = map(Path, sys.argv[1:])
+workspace = workspace.resolve()
+state_dir = state_dir.resolve()
+destination = destination.resolve()
+try:
+    state_relative = state_dir.relative_to(workspace)
+except ValueError:
+    state_relative = None
+paths = subprocess.check_output(
+    ["git", "-C", str(workspace), "ls-files", "-co", "--exclude-standard", "-z"]
+).split(b"\0")
+for raw_path in sorted(item for item in paths if item):
+    relative = os.fsdecode(raw_path)
+    source = workspace / relative
+    if state_relative is not None and (relative == str(state_relative) or relative.startswith(str(state_relative) + os.sep)):
+        continue
+    if not source.exists() and not source.is_symlink():
+        continue
+    target = destination / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        target.symlink_to(os.readlink(source))
+    elif source.is_dir():
+        target.mkdir(exist_ok=True)
+        shutil.copystat(source, target)
+    else:
+        shutil.copy2(source, target)
+PY
+else
+  git -C "$workspace" archive --format=tar HEAD | tar -xf - -C "$build_context"
+fi
 
 go_builder_image=$(awk '$1 == "FROM" && $3 == "AS" && $4 == "build-env" { print $2; exit }' "$build_context/Dockerfile")
 if [[ -z "$go_builder_image" ]]; then
@@ -151,6 +305,7 @@ build_images() {
   DOCKER_BUILDKIT=1 docker build --platform "$build_platform" \
     --file "$runtime_dockerfile" \
     --label "org.opencontainers.image.revision=$source_sha" \
+    --label "io.ohsu-comp-bio.funnel.source-id=$source_id" \
     --tag "$candidate_image" "$build_context"
   candidate_package_finished=$(date +%s)
 
@@ -204,7 +359,7 @@ PY
       done
       CGO_ENABLED=0 go build -trimpath -o /out/authorizer ./plugin-gen3
     '
-  cp "$plugin_output/authorizer" "$build_context/authorizer"
+  install -m 0755 "$plugin_output/authorizer" "$build_context/authorizer-binary"
   DOCKER_BUILDKIT=1 docker build --platform "$build_platform" \
     --file "$builder_dockerfile" --target gen3-plugin \
     --build-arg "GO_BUILDER_IMAGE=$go_builder_image" \
@@ -228,18 +383,33 @@ build_images >"$builder_log" 2>&1 &
 build_pid=$!
 kind_started=$(date +%s)
 {
-  printf 'FUNNEL_CI_CLUSTER_OWNED=true\n'
+  if [[ "$reuse_cluster" == true ]]; then
+    printf 'FUNNEL_CI_CLUSTER_OWNED=false\n'
+  else
+    printf 'FUNNEL_CI_CLUSTER_OWNED=true\n'
+  fi
   printf 'FUNNEL_CI_KIND_CLUSTER_NAME=%s\n' "$kind_cluster"
+  printf 'FUNNEL_CI_SOURCE_ID=%s\n' "$source_id"
+  printf 'FUNNEL_CI_REUSE_CLUSTER=%s\n' "$reuse_cluster"
 } >>"$GITHUB_ENV"
-kind create cluster --name "$kind_cluster" --config "$kind_config" --kubeconfig "$kubeconfig" --wait 180s >"$kind_log" 2>&1 &
-kind_pid=$!
-
-if ! wait "$kind_pid"; then
+if [[ "$cluster_reused" != true ]]; then
+  kind create cluster --name "$kind_cluster" --config "$kind_config" --kubeconfig "$kubeconfig" --wait 180s >"$kind_log" 2>&1 &
+  kind_pid=$!
+  if ! wait "$kind_pid"; then
+    kind_pid=""
+    exit 1
+  fi
   kind_pid=""
-  exit 1
+  if [[ "$reuse_cluster" == true ]]; then
+    marker_tmp="$ownership_marker.tmp.$$"
+    printf 'workspace=%s\ncluster=%s\nkubeconfig=%s\n' "$workspace" "$kind_cluster" "$(cd "$(dirname "$kubeconfig")" && pwd)/$(basename "$kubeconfig")" >"$marker_tmp"
+    mv "$marker_tmp" "$ownership_marker"
+  fi
 fi
-kind_pid=""
 cluster_ready=$(date +%s)
+kind_ready_file=${FUNNEL_CI_KIND_READY_FILE:-$state_dir/kind-ready}
+printf 'cluster=%s\nkubeconfig=%s\n' "$kind_cluster" "$kubeconfig" >"$kind_ready_file.tmp.$$"
+mv "$kind_ready_file.tmp.$$" "$kind_ready_file"
 
 if ! wait "$build_pid"; then
   build_pid=""
@@ -250,8 +420,13 @@ build_pid=""
 kind get nodes --name "$kind_cluster"
 candidate_image_id=$(docker image inspect "$candidate_image" --format '{{.Id}}')
 candidate_revision=$(docker image inspect "$candidate_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+candidate_source_id=$(docker image inspect "$candidate_image" --format '{{index .Config.Labels "io.ohsu-comp-bio.funnel.source-id"}}')
 if [[ "$candidate_revision" != "$source_sha" ]]; then
   printf 'candidate image revision %s does not match checked-out commit %s\n' "$candidate_revision" "$source_sha" >&2
+  exit 1
+fi
+if [[ "$candidate_source_id" != "$source_id" ]]; then
+  printf 'candidate image source identity %s does not match build input %s\n' "$candidate_source_id" "$source_id" >&2
   exit 1
 fi
 plugin_image_id=$(docker image inspect "$plugin_image" --format '{{.Id}}')
@@ -310,6 +485,7 @@ printf 'candidate_import_seconds=%s\n' "$((import_finished - import_started))"
   printf 'FUNNEL_CI_IMAGE_DIGEST=%s\n' "${node_digests[0]}"
   printf 'FUNNEL_CI_IMAGE_CONFIG_ID=%s\n' "${node_config_ids[0]}"
   printf 'FUNNEL_CI_SOURCE_SHA=%s\n' "$source_sha"
+  printf 'FUNNEL_CI_SOURCE_ID=%s\n' "$source_id"
   printf 'FUNNEL_CI_PLUGIN_IMAGE_REF=%s\n' "$plugin_image"
   printf 'FUNNEL_CI_PLUGIN_IMAGE_ID=%s\n' "$plugin_image_id"
   printf 'FUNNEL_CI_PLUGIN_IMAGE_DIGEST=%s\n' "${plugin_node_digests[0]}"

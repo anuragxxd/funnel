@@ -15,8 +15,10 @@ bootstrap_log="$artifacts_dir/python-bootstrap.log"
 bootstrap_status_file="$artifacts_dir/python-bootstrap.exit"
 build_log="$artifacts_dir/build-kind.log"
 build_status_file="$artifacts_dir/build-kind.exit"
-bootstrap_pid=
-build_pid=
+declare -A phase_pid=()
+declare -A phase_status=()
+cache_ready=0
+phase_names=()
 test_runner_started=0
 exit_status=0
 
@@ -84,7 +86,7 @@ run_test_phase() {
         uv tool run --from poetry==2.2.1 poetry run pytest \
         --video=retain-on-failure \
         -n logical \
-        --maxfail=1 \
+        --maxfail=1 --max-worker-restart=0 \
         -m 'gen3_workflow and not wip' \
         --alluredir "$test_root/allure-results" \
         --no-header \
@@ -143,96 +145,112 @@ start_parallel_phase() {
   rm -f "$status_path"
   record_event "$name" start
   log "phase start: $name"
-  case "$name" in
-    python-dependencies|build-kind) ;;
-    *)
-      printf 'unsupported concurrent lifecycle phase: %s\n' "$name" >&2
-      return 2
-      ;;
-  esac
+  phase_names+=("$name")
   python3 "$script_dir/run-command.py" "$workspace" "$log_path" "$limit" "$@" \
-    >>"$lifecycle_log" 2>&1 &
-  case "$name" in
-    python-dependencies) bootstrap_pid=$! ;;
-    build-kind) build_pid=$! ;;
-  esac
+    2>&1 &
+  phase_pid["$name"]=$!
 }
 
 finish_parallel_phase() {
   local name=$1 status=$2
+  phase_status[$name]=$status
+  if (( cache_ready == 0 )) && [[ "${phase_status[python-dependencies]:-}" == 0 && "${phase_status[build-kind]:-}" == 0 ]]; then
+    printf 'cache_ready=true\n' >>"$GITHUB_OUTPUT"
+    cache_ready=1
+  fi
   record_event "$name" end "$status"
   log "phase end: $name exit=$status"
-  if [[ "$name" == python-dependencies ]]; then
-    printf '%s\n' "$status" >"$bootstrap_status_file"
-  else
-    printf '%s\n' "$status" >"$build_status_file"
-  fi
+  case "$name" in
+    python-dependencies) printf '%s\n' "$status" >"$bootstrap_status_file" ;;
+    build-kind) printf '%s\n' "$status" >"$build_status_file" ;;
+  esac
   return 0
 }
 
-stop_parallel_phase() {
-  local name=$1 pid=$2 status=0
-  [[ -n "$pid" ]] || return 0
-  kill -TERM "$pid" 2>/dev/null || true
-  set +e
-  wait "$pid"
-  status=$?
-  set -e
-  if (( status == 0 )); then
-    status=143
-  fi
-  finish_parallel_phase "$name" "$status"
+stop_parallel_phases() {
+  local name pid status
+  for name in "${phase_names[@]}"; do
+    pid=${phase_pid[$name]:-}
+    [[ -n "$pid" ]] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  for name in "${phase_names[@]}"; do
+    pid=${phase_pid[$name]:-}
+    [[ -n "$pid" ]] || continue
+    set +e
+    wait "$pid"
+    status=$?
+    set -e
+    finish_parallel_phase "$name" "$status"
+    unset 'phase_pid[$name]'
+  done
+}
+
+reap_finished_phases() {
+  local running name pid status
+  running=$(jobs -pr || true)
+  for name in "${phase_names[@]}"; do
+    pid=${phase_pid[$name]:-}
+    [[ -n "$pid" ]] || continue
+    if ! printf '%s\n' "$running" | awk -v pid="$pid" '$0 == pid { found = 1 } END { exit !found }'; then
+      set +e
+      wait "$pid"
+      status=$?
+      set -e
+      finish_parallel_phase "$name" "$status"
+      unset 'phase_pid[$name]'
+      if (( status != 0 )); then
+        stop_parallel_phases
+        return "$status"
+      fi
+    fi
+  done
+}
+
+wait_for_kind_ready() {
+  local ready_file=${FUNNEL_CI_KIND_READY_FILE:?Kind ready marker path is required}
+  local kubeconfig=${FUNNEL_CI_KUBECONFIG:?explicit kubeconfig path is required}
+  local state_dir=${FUNNEL_CI_STATE_DIR:?persistent state directory is required}
+  [[ "$ready_file" == "$state_dir/kind-ready" && "$kubeconfig" == "$state_dir/kubeconfig" ]] || {
+    log 'Kind marker and kubeconfig must belong to the explicit lifecycle state directory'
+    return 2
+  }
+  log "waiting for Kind readiness marker: $ready_file"
+  while [[ ! -e "$ready_file" ]]; do
+    reap_finished_phases || return $?
+    ((${#phase_pid[@]})) || { log 'all startup branches ended before Kind reported readiness'; return 1; }
+    sleep 1
+  done
+  load_hook_environment
+  [[ -f "$kubeconfig" ]] || { log "ready marker exists but kubeconfig is missing: $kubeconfig"; return 2; }
+  export KUBECONFIG="$kubeconfig"
+  while ! timeout --signal=TERM --kill-after=1s 6s kubectl --kubeconfig "$kubeconfig" get --raw=/readyz >/dev/null 2>&1; do
+    reap_finished_phases || return $?
+    ((${#phase_pid[@]})) || { log 'startup branches ended while the explicit Kind API remained unavailable'; return 1; }
+    sleep 1
+  done
+  log 'Kind marker is present and the explicit cluster API /readyz responds'
 }
 
 wait_for_parallel_phases() {
-  local completed status
-  completed=
-  while [[ -n "$bootstrap_pid" && -n "$build_pid" ]]; do
-    set +e
-    wait -n -p completed "$bootstrap_pid" "$build_pid"
-    status=$?
-    set -e
-    if [[ "$completed" == "$bootstrap_pid" ]]; then
-      finish_parallel_phase python-dependencies "$status"
-      bootstrap_pid=
-      if (( status != 0 )); then
-        stop_parallel_phase build-kind "$build_pid"
-        build_pid=
-        return "$status"
-      fi
-    elif [[ "$completed" == "$build_pid" ]]; then
-      finish_parallel_phase build-kind "$status"
-      build_pid=
-      if (( status != 0 )); then
-        stop_parallel_phase python-dependencies "$bootstrap_pid"
-        bootstrap_pid=
-        return "$status"
-      fi
-    else
-      log 'parallel phase waiter lost track of a child process'
-      return 125
-    fi
+  while ((${#phase_pid[@]})); do
+    reap_finished_phases || return $?
+    ((${#phase_pid[@]} == 0)) || sleep 1
   done
+  return 0
+}
 
-  if [[ -n "$bootstrap_pid" ]]; then
-    set +e
-    wait "$bootstrap_pid"
-    status=$?
-    set -e
-    finish_parallel_phase python-dependencies "$status"
-    bootstrap_pid=
-    (( status == 0 )) || return "$status"
-  fi
-  if [[ -n "$build_pid" ]]; then
-    set +e
-    wait "$build_pid"
-    status=$?
-    set -e
-    finish_parallel_phase build-kind "$status"
-    build_pid=
-    (( status == 0 )) || return "$status"
-  fi
-  printf 'cache_ready=true\n' >>"$GITHUB_OUTPUT"
+wait_for_named_phases() {
+  local name
+  while :; do
+    local pending=0
+    for name in "$@"; do
+      [[ -n "${phase_pid[$name]:-}" ]] && pending=1
+    done
+    (( pending == 1 )) || return 0
+    reap_finished_phases || return $?
+    sleep 1
+  done
 }
 
 preflight() {
@@ -261,6 +279,12 @@ preflight() {
   }
   [[ "$FUNNEL_CI_ARTIFACTS_DIR" == /* ]] || {
     printf 'FUNNEL_CI_ARTIFACTS_DIR must be absolute\n' >&2
+    return 2
+  }
+  [[ "$FUNNEL_CI_STATE_DIR" == /* && \
+    "$FUNNEL_CI_KUBECONFIG" == "$FUNNEL_CI_STATE_DIR/kubeconfig" && \
+    "$FUNNEL_CI_KIND_READY_FILE" == "$FUNNEL_CI_STATE_DIR/kind-ready" ]] || {
+    printf 'Kind state, kubeconfig, and ready marker must use the explicit lifecycle state directory\n' >&2
     return 2
   }
   [[ "$FUNNEL_CI_BUILD_PLATFORM" =~ ^linux/(amd64|arm64)$ ]] || {
@@ -297,10 +321,6 @@ preflight() {
   }
   [[ -f "$test_root/pyproject.toml" && -f "$test_root/poetry.lock" ]] || {
     printf 'pinned Gen3 test checkout must include pyproject.toml and poetry.lock\n' >&2
-    return 2
-  }
-  [[ -f "$test_root/gen3_ci/scripts/setup_ci_env.sh" ]] || {
-    printf 'pinned setup_ci_env.sh is missing from the test checkout\n' >&2
     return 2
   }
   [[ -f "$script_dir/run-command.py" && -f "$script_dir/redact_logs.py" && \
@@ -375,14 +395,7 @@ capture_cluster_diagnostics() {
 finish() {
   exit_status=$?
   trap - EXIT
-  if [[ -n "$bootstrap_pid" ]]; then
-    kill -TERM "$bootstrap_pid" 2>/dev/null || true
-    wait "$bootstrap_pid" 2>/dev/null || true
-  fi
-  if [[ -n "$build_pid" ]]; then
-    kill -TERM "$build_pid" 2>/dev/null || true
-    wait "$build_pid" 2>/dev/null || true
-  fi
+  stop_parallel_phases
   load_hook_environment || true
   if (( exit_status != 0 )); then
     if (( test_runner_started == 0 )) && [[ "${FUNNEL_CI_CLUSTER_OWNED:-}" == true ]]; then
@@ -422,25 +435,26 @@ start_parallel_phase python-dependencies "$bootstrap_log" "$bootstrap_status_fil
   -C "$test_root" install --only main --no-root --no-interaction || exit $?
 start_parallel_phase build-kind "$build_log" "$build_status_file" \
   bash "$script_dir/build-and-start-kind.sh" || exit $?
-wait_for_parallel_phases || exit $?
+wait_for_kind_ready || { status=$?; stop_parallel_phases; exit "$status"; }
 load_hook_environment
 [[ -n "${KUBECONFIG:-}" && -f "$KUBECONFIG" ]] || {
-  printf 'build hook did not provide the owned Kind kubeconfig\n' >&2
+  printf 'workflow did not provide the explicit Kind kubeconfig\n' >&2
   exit 2
 }
 
-run_phase create-namespace kubectl create namespace "$NAMESPACE" || exit $?
-run_phase setup-kind-gen3 bash "$script_dir/setup-environment.sh" || exit $?
+start_parallel_phase gen3-storage "$artifacts_dir/gen3-storage.log" "$artifacts_dir/gen3-storage.exit" \
+  env FUNNEL_CI_HELM_PROFILE=storage bash "$script_dir/setup-environment.sh" || exit $?
+start_parallel_phase gen3-auth "$artifacts_dir/gen3-auth.log" "$artifacts_dir/gen3-auth.exit" \
+  env FUNNEL_CI_HELM_PROFILE=bootstrap-auth bash "$script_dir/bootstrap-services.sh" prepare-auth || exit $?
+wait_for_named_phases gen3-storage gen3-auth || { status=$?; stop_parallel_phases; exit "$status"; }
+load_hook_environment
+start_parallel_phase gen3-users "$artifacts_dir/gen3-users.log" "$artifacts_dir/gen3-users.exit" \
+  env FUNNEL_CI_HELM_PROFILE=bootstrap-users bash "$script_dir/bootstrap-services.sh" users || exit $?
+wait_for_parallel_phases || exit $?
 load_hook_environment
 
-test_branch=${BRANCH//\//_}
-test_branch=${test_branch//\(/_}
-test_branch=${test_branch//\)/_}
-setup_helper="$test_root/gen3_ci/scripts/setup_ci_env.sh"
-run_phase deploy-gen3 bash -c \
-  'cd "$1" && shift && exec bash "$@"' _ "$test_root" "$setup_helper" \
-  "$NAMESPACE" service-env-setup "$HELM_BRANCH" \
-  "$gitops_repo/ci/default/values" funnel "$test_branch" || exit $?
+run_phase deploy-gen3 env FUNNEL_CI_HELM_PROFILE=bootstrap-deploy \
+  bash "$script_dir/bootstrap-services.sh" deploy || exit $?
 load_hook_environment
 
 run_phase expose-gen3 bash "$script_dir/expose-and-verify-environment.sh" || exit $?

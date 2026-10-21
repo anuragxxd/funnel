@@ -1,3 +1,38 @@
+For local debugging, keep the environment between edits. `dev.sh` stores its
+kubeconfig, dependency caches, and per-command logs in ignored `.gen3-local/`.
+It only accesses the cluster recorded as owned by this checkout. Local runs use
+the fixture’s MinIO credentials and ignore host AWS profiles.
+
+Prerequisites: Docker, Kind 0.31.0, kubectl, Helm 4.3.1, yq 4, jq, AWS CLI,
+Python 3.13, uv, and GNU `timeout`. Put pinned tools in `.gen3-local/bin/`
+or on `PATH`. Leave room in Docker’s virtual disk for service and executor
+images. Local test and bootstrap steps require at least 2 GiB free there; host
+filesystem free space alone does not establish Docker capacity.
+
+```sh
+bash tests/gen3/dev.sh deps                  # Once: pinned test dependencies
+bash tests/gen3/dev.sh build                 # Once, then only for image changes
+bash tests/gen3/dev.sh step prepare          # Once: database, auth, storage
+bash tests/gen3/dev.sh step deploy
+bash tests/gen3/dev.sh forward               # Leave running in another terminal
+bash tests/gen3/dev.sh test -k directory      # Rerun a focused test
+```
+
+After a bootstrap failure, edit the script and rerun the failing phase with
+`step database`, `step auth`, `step users`, or `step client`. These commands do
+not rebuild images or recreate Kind. `step values` checks configuration without
+deploying it. `status` and `logs deployment/fence-deployment` inspect retained
+resources. Cleanup happens only with the explicit `down` command.
+
+After a normal test run has initialized authentication fixtures, use
+`RUNNING_LOCAL=true bash tests/gen3/dev.sh test -k directory` for focused
+retries that reuse those fixtures. Run the complete selection without
+`RUNNING_LOCAL` for final verification.
+
+Local image builds include uncommitted source and use content-derived image tags.
+A local run on an ARM host builds ARM images; CI still builds AMD64. Focused local
+passes are debugging evidence; the complete fresh CI run remains the final check.
+
 The Gen3 check has a ten-minute job limit and a five-to-six-minute runtime
 target. The budget includes dependency setup, image builds, cluster startup,
 service preparation, tests, and diagnostics. Hosted run timings establish whether
@@ -5,10 +40,28 @@ the target is met. A shorter timeout alone is not a performance improvement.
 
 The repository owns the workflow and lifecycle runner. The runner uses pinned
 integration-test and GitOps revisions, prepares dependencies alongside the
-candidate build and two-node Kind cluster, and runs the upstream
+candidate build and two-node Kind cluster. Once Kind is ready, database/auth
+bootstrap and storage setup run concurrently with compilation. The runner uses
+bounded parallel image pulls and runs the upstream
 `gen3_workflow and not wip` test selection. The fixture uses one replica of each
 required Gen3 service and omits the unused Elasticsearch pod. It retains the
-real authentication services, gateway, PostgreSQL, MinIO, and Mountpoint CSI.
+real authentication services, PostgreSQL, MinIO, and Mountpoint CSI. Two
+gateways share the same Funnel backend: `/workflows/` keeps the upstream Kind
+bearer-token mode, while `/ga4gh/tes/` validates real DPoP proofs. This keeps the
+task-token executor test enabled without changing ordinary client authentication.
+Before pytest starts, a request with an invalid proof must return HTTP 401 with
+`invalid_dpop_proof`; a disabled or misrouted gateway fails setup immediately.
+Use `step dpop` to refresh those routes in a retained environment, then restart
+your local port-forward.
+The chart’s network policies isolate executors from internal Gen3 services;
+fixture policies permit the required MinIO traffic and executor access to the
+public Gen3 gateway. Fence advertises that gateway in API-key issuer URLs so
+task-token clients can reach both authentication and workflow endpoints. `user.yaml` preserves the
+pinned upstream Kind fixture, including read-only access to the main user’s
+tasks for the delegated-access test. It also grants the main user `create` on
+`/services/fence/task-token/WORKFLOW` for the task-token integration case.
+MinIO stores the small test dataset on a 1 GiB memory-backed volume, keeping its
+free-space checks independent of the Docker host’s shared disk usage.
 
 The Go compiler and module caches persist across runs. The candidate image is
 built from the checked-out Funnel source. Its identity is checked on both Kind
@@ -19,8 +72,9 @@ from replacing the candidate.
 The authorizer is built from the pinned
 [`funnel-gen3-plugin` commit `eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3`](https://github.com/calypr/funnel-gen3-plugin/commit/eacaf197bfbc786c753d9ecfb86a2a2f7022a5e3)
 and the candidate's Funnel module. Both Kind nodes receive that image, and the
-verification hook checks the running plugin init container. The renderer's
-plugin override remains optional for other callers.
+verification hook checks the running plugin init container. The renderer requires
+both candidate image references to prevent a registry image from replacing either
+built artifact.
 
 The pytest controller creates test API keys once before starting its workers.
 TES completion polling uses two-second intervals and a 90-attempt limit, with

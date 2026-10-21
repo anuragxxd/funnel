@@ -34,6 +34,8 @@ snapshot() {
   if [[ "$include_logs" == true ]]; then
     capture "Funnel server logs in $service_namespace" kubectl --request-timeout=3s -n "$service_namespace" logs \
       -l app=funnel --all-containers --prefix --tail=80 --max-log-requests=8
+    capture "Gen3 gateway logs in $service_namespace" kubectl --request-timeout=3s -n "$service_namespace" logs \
+      -l 'app in (gen3-workflow,gen3-workflow-dpop)' --all-containers --prefix --tail=40 --max-log-requests=8
     capture "Funnel worker logs in $jobs_namespace" kubectl --request-timeout=3s -n "$jobs_namespace" logs \
       -l app=funnel-worker --all-containers --prefix --tail=80 --max-log-requests=8
     capture "Funnel executor logs in $jobs_namespace" kubectl --request-timeout=3s -n "$jobs_namespace" logs \

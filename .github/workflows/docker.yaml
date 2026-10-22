@@ -58,8 +58,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.QUAY_REPO }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=funnel-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=funnel-${{ env.PLATFORM_PAIR }}
 
       - name: Export digest
         run: |

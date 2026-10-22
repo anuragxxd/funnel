@@ -28,6 +28,10 @@ jobs:
       with:
         go-version-file: go.mod
 
+    - name: Download Go modules
+      if: steps.binary-cache.outputs.cache-hit != 'true'
+      run: sh .github/scripts/download-go-modules.sh
+
     - name: Build Funnel
       if: steps.binary-cache.outputs.cache-hit != 'true'
       run: make build

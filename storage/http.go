@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,9 +23,25 @@ type HTTP struct {
 // NewHTTP creates a new HTTP instance.
 func NewHTTP(conf *config.HTTPStorage) (*HTTP, error) {
 	client := &http.Client{
-		Timeout: conf.Timeout.GetDuration().AsDuration(),
+		Timeout:       conf.Timeout.GetDuration().AsDuration(),
+		CheckRedirect: checkRedirect,
 	}
 	return &HTTP{client}, nil
+}
+
+// checkRedirect keeps net/http's limit of 10 redirects and stops an upload at
+// a redirect that would turn it into a GET. net/http follows a 301, 302 or 303
+// for a PUT by sending a GET without the body, so a successful GET would pass
+// for a successful upload. A 307 or 308 keeps the method and resends the body,
+// so the upload follows it.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if via[0].Method == http.MethodPut && req.Method != http.MethodPut {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 // Stat returns information about the object at the given storage URL.
@@ -140,6 +157,23 @@ func (b *HTTP) Put(ctx context.Context, url string, hostPath string) (*Object, e
 		return nil, fmt.Errorf("httpStorage: creating PUT request: %s", err)
 	}
 	req.ContentLength = info.Size()
+	// Lets net/http resend the file when a 307 or 308 redirect moves the
+	// upload elsewhere, such as to a presigned URL created on demand. With
+	// Expect: 100-continue the file is only sent once the server accepts it,
+	// so a redirecting server doesn't receive it first.
+	if info.Size() > 0 {
+		req.Header.Set("Expect", "100-continue")
+		req.GetBody = func() (io.ReadCloser, error) {
+			f, err := os.Open(hostPath)
+			if err != nil {
+				return nil, err
+			}
+			return struct {
+				io.Reader
+				io.Closer
+			}{fsutil.Reader(ctx, f), f}, nil
+		}
+	}
 
 	resp, err := b.client.Do(req)
 	if err != nil {

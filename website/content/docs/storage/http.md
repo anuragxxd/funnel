@@ -22,6 +22,17 @@ output, and of each match of a wildcard output, by appending the file's path to
 the output URL. Those derived URLs carry no valid signature, so use one `FILE`
 output per presigned URL.
 
+For `DIRECTORY` and wildcard outputs, point the output URL at a server that
+signs each upload as it arrives, when the file name is known, and redirects it
+to the storage provider:
+
+- An upload follows a 307 or 308 redirect and resends the file to the new URL.
+- Uploads send `Expect: 100-continue`, so a redirecting server doesn't receive
+  the file first.
+- A 301, 302 or 303 response to an upload is reported as an error, because
+  following it would turn the upload into a GET.
+- Downloads follow redirects too.
+
 The URL is stored with the task, including any signature in its query string,
 so issue presigned URLs with a short expiry. The storage provider limits the
 size of a single PUT (5 GB on Amazon S3).

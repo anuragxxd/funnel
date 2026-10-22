@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -192,5 +193,92 @@ func TestHTTPPutMissingHostFile(t *testing.T) {
 	_, err := newTestHTTP(t).Put(context.Background(), "https://example.com/output.txt", filepath.Join(t.TempDir(), "missing.txt"))
 	if err == nil {
 		t.Fatal("Expected error for Put call with a missing host file")
+	}
+}
+
+func TestHTTPPutFollowsRedirectWithBody(t *testing.T) {
+	content := "redirected upload\n"
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		if r.URL.RawQuery != presignedQuery {
+			t.Errorf("query = %q, want it unchanged", r.URL.RawQuery)
+		}
+		if len(r.TransferEncoding) != 0 || r.ContentLength != int64(len(content)) {
+			t.Errorf("transfer encoding = %v, content length = %d, want none and %d", r.TransferEncoding, r.ContentLength, len(content))
+		}
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != content {
+			t.Errorf("body = %q, want %q", body, content)
+		}
+		w.Header().Set("ETag", `"etag-redirected"`)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	// A gateway that creates a presigned URL on demand and redirects to it.
+	// It doesn't read the body: with Expect: 100-continue the client holds
+	// the file back until a server accepts it.
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Expect") != "100-continue" {
+			t.Errorf("Expect header = %q, want 100-continue", r.Header.Get("Expect"))
+		}
+		http.Redirect(w, r, target.URL+"/bucket/output.txt?"+presignedQuery, http.StatusTemporaryRedirect)
+	}))
+	defer gateway.Close()
+
+	obj, err := newTestHTTP(t).Put(context.Background(), gateway.URL+"/upload/token/output.txt", writeTestFile(t, content))
+	if err != nil {
+		t.Fatal("Unexpected error for Put call:", err)
+	}
+	if obj.ETag != `"etag-redirected"` {
+		t.Errorf("object ETag = %q, want the redirect target's", obj.ETag)
+	}
+}
+
+func TestHTTPPutStopsAtRedirectToGet(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	// net/http would follow a 302 for a PUT with a GET, and that GET's 200
+	// must not pass for a successful upload.
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/output.txt", http.StatusFound)
+	}))
+	defer gateway.Close()
+
+	_, err := newTestHTTP(t).Put(context.Background(), gateway.URL+"/output.txt", writeTestFile(t, "data"))
+	if err == nil || !strings.Contains(err.Error(), "302") {
+		t.Errorf("error = %v, want the 302 reported", err)
+	}
+	if n := targetHits.Load(); n != 0 {
+		t.Errorf("redirect target received %d requests, want 0", n)
+	}
+}
+
+func TestHTTPGetFollowsRedirect(t *testing.T) {
+	content := "redirected download\n"
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, content)
+	}))
+	defer target.Close()
+
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/input.txt?"+presignedQuery, http.StatusFound)
+	}))
+	defer gateway.Close()
+
+	dest := filepath.Join(t.TempDir(), "input.txt")
+	if _, err := newTestHTTP(t).Get(context.Background(), gateway.URL+"/download/token/input.txt", dest); err != nil {
+		t.Fatal("Unexpected error for Get call:", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if string(got) != content {
+		t.Errorf("downloaded %q, want %q", got, content)
 	}
 }

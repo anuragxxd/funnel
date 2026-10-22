@@ -5,6 +5,7 @@ set -Eeuo pipefail
 : "${GITHUB_ENV:?}"
 
 workspace=$(cd "$GITHUB_WORKSPACE" && pwd)
+PYTHONDONTWRITEBYTECODE=1 python3 "$workspace/tests/test-image-config-digest.py"
 source_sha=$(git -C "$workspace" rev-parse HEAD)
 candidate_image="quay.io/ohsu-comp-bio/funnel:ci-${source_sha:0:12}"
 
@@ -22,6 +23,13 @@ if [[ "$candidate_revision" != "$source_sha" ]]; then
   exit 1
 fi
 
+archive_dir=$(mktemp -d)
+trap 'rm -rf "$archive_dir"' EXIT
+image_archive="$archive_dir/candidate.tar"
+docker save "$candidate_image" >"$image_archive"
+candidate_config_id=$(python3 "$workspace/tests/image-config-digest.py" "$image_archive" "$candidate_image")
+printf 'candidate Docker ID=%s archived config=%s\n' "$candidate_image_id" "$candidate_config_id"
+
 nodes=$(kind get nodes --name funnel-gen3)
 if [[ -z "$nodes" ]]; then
   printf 'Kind cluster funnel-gen3 has no nodes\n' >&2
@@ -30,10 +38,10 @@ fi
 
 while IFS= read -r node; do
   [[ -n "$node" ]] || continue
-  docker save "$candidate_image" | docker exec -i "$node" ctr --namespace k8s.io images import --snapshotter overlayfs -
+  docker exec -i "$node" ctr --namespace k8s.io images import --snapshotter overlayfs - <"$image_archive"
   node_config_id=$(docker exec "$node" crictl inspecti "$candidate_image" | jq -er '.status.id')
-  if [[ "$node_config_id" != "$candidate_image_id" ]]; then
-    printf 'node %s loaded image ID %s, expected %s\n' "$node" "$node_config_id" "$candidate_image_id" >&2
+  if [[ "$node_config_id" != "$candidate_config_id" ]]; then
+    printf 'node %s loaded image ID %s, expected %s\n' "$node" "$node_config_id" "$candidate_config_id" >&2
     exit 1
   fi
   printf 'node=%s image=%s image_id=%s\n' "$node" "$candidate_image" "$node_config_id"

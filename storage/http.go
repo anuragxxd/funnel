@@ -199,17 +199,11 @@ func (b *HTTP) Put(ctx context.Context, url string, hostPath string) (*Object, e
 // is escaped, so a file name containing a character such as #, ? or % stays
 // part of the path, and the URL's query, which may carry a token, is kept.
 func (b *HTTP) Join(url, path string) (string, error) {
-	u, err := urllib.Parse(url)
+	joined, err := joinURLPath(url, path)
 	if err != nil {
 		return "", fmt.Errorf("httpStorage: parsing URL: %s", err)
 	}
-	// JoinPath takes escaped segments, and PathEscape escapes slashes too, so
-	// the segments are escaped one at a time.
-	segments := strings.Split(path, "/")
-	for i, s := range segments {
-		segments[i] = urllib.PathEscape(s)
-	}
-	return u.JoinPath(segments...).String(), nil
+	return joined, nil
 }
 
 // List is not supported by HTTP storage.

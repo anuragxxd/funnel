@@ -159,8 +159,9 @@ func (b *HTTP) Put(ctx context.Context, url string, hostPath string) (*Object, e
 	req.ContentLength = info.Size()
 	// Lets net/http resend the file when a 307 or 308 redirect moves the
 	// upload elsewhere, such as to a presigned URL created on demand. With
-	// Expect: 100-continue the file is only sent once the server accepts it,
-	// so a redirecting server doesn't receive it first.
+	// Expect: 100-continue, net/http waits up to one second for the server to
+	// answer before it sends the file, so a server that redirects within that
+	// second doesn't receive it.
 	if info.Size() > 0 {
 		req.Header.Set("Expect", "100-continue")
 		req.GetBody = func() (io.ReadCloser, error) {
@@ -196,9 +197,21 @@ func (b *HTTP) Put(ctx context.Context, url string, hostPath string) (*Object, e
 	}, nil
 }
 
-// Join joins the given URL with the given subpath.
+// Join joins the given URL with the given subpath. Each segment of the subpath
+// is escaped, so a file name containing a character such as #, ? or % stays
+// part of the path, and the URL's query, which may carry a token, is kept.
 func (b *HTTP) Join(url, path string) (string, error) {
-	return strings.TrimSuffix(url, "/") + "/" + path, nil
+	u, err := urllib.Parse(url)
+	if err != nil {
+		return "", fmt.Errorf("httpStorage: parsing URL: %s", err)
+	}
+	// JoinPath takes escaped segments, and PathEscape escapes slashes too, so
+	// the segments are escaped one at a time.
+	segments := strings.Split(path, "/")
+	for i, s := range segments {
+		segments[i] = urllib.PathEscape(s)
+	}
+	return u.JoinPath(segments...).String(), nil
 }
 
 // List is not supported by HTTP storage.

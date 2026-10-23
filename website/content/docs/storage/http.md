@@ -19,16 +19,17 @@ allowed, so the URL itself must grant access.
 Presigned URLs work for `FILE` inputs and outputs. A presigned URL is signed for
 one exact object, but Funnel derives the URL of each file in a `DIRECTORY`
 output, and of each match of a wildcard output, by appending the file's path to
-the output URL. Those derived URLs carry no valid signature, so use one `FILE`
-output per presigned URL.
+the path of the output URL, keeping its query string. Those derived URLs carry
+no valid signature, so use one `FILE` output per presigned URL.
 
 For `DIRECTORY` and wildcard outputs, point the output URL at a server that
 signs each upload as it arrives, when the file name is known, and redirects it
 to the storage provider:
 
 - An upload follows a 307 or 308 redirect and resends the file to the new URL.
-- Uploads send `Expect: 100-continue`, so a redirecting server doesn't receive
-  the file first.
+- Uploads send `Expect: 100-continue` and wait up to one second for the server
+  to answer before sending the file. A server that redirects within that second
+  doesn't receive the file; a slower one may receive some or all of it first.
 - A 301, 302 or 303 response to an upload is reported as an error, because
   following it would turn the upload into a GET.
 - Downloads follow redirects too.

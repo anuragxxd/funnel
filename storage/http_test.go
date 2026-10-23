@@ -218,8 +218,8 @@ func TestHTTPPutFollowsRedirectWithBody(t *testing.T) {
 	defer target.Close()
 
 	// A gateway that creates a presigned URL on demand and redirects to it.
-	// It doesn't read the body: with Expect: 100-continue the client holds
-	// the file back until a server accepts it.
+	// It answers without reading the body, which with Expect: 100-continue
+	// the client holds back while it waits for that answer.
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Expect") != "100-continue" {
 			t.Errorf("Expect header = %q, want 100-continue", r.Header.Get("Expect"))
@@ -280,5 +280,57 @@ func TestHTTPGetFollowsRedirect(t *testing.T) {
 	got, _ := os.ReadFile(dest)
 	if string(got) != content {
 		t.Errorf("downloaded %q, want %q", got, content)
+	}
+}
+
+func TestHTTPJoin(t *testing.T) {
+	tests := []struct {
+		url, path, want string
+	}{
+		{"https://example.com/upload/dir", "sub/y.txt", "https://example.com/upload/dir/sub/y.txt"},
+		{"https://example.com/upload/dir/", "y.txt", "https://example.com/upload/dir/y.txt"},
+		{"https://example.com/upload/dir", "result#1.txt", "https://example.com/upload/dir/result%231.txt"},
+		{"https://example.com/upload/dir", "a?b.txt", "https://example.com/upload/dir/a%3Fb.txt"},
+		{"https://example.com/upload/dir", "50%25.txt", "https://example.com/upload/dir/50%2525.txt"},
+		{"https://example.com/upload/dir", "100%.txt", "https://example.com/upload/dir/100%25.txt"},
+		// A server that signs uploads as they arrive may take a token in the
+		// query, which must reach it unchanged.
+		{"https://example.com/upload/dir?token=a%2Bb", "y.txt", "https://example.com/upload/dir/y.txt?token=a%2Bb"},
+	}
+	store := newTestHTTP(t)
+	for _, tt := range tests {
+		got, err := store.Join(tt.url, tt.path)
+		if err != nil {
+			t.Errorf("Join(%q, %q) returned error: %s", tt.url, tt.path, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("Join(%q, %q) = %q, want %q", tt.url, tt.path, got, tt.want)
+		}
+	}
+}
+
+// Each file of a DIRECTORY output is uploaded to a URL made with Join, and
+// must arrive under its own name.
+func TestHTTPPutKeepsJoinedFileNames(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.URL.Path
+	}))
+	defer server.Close()
+
+	store := newTestHTTP(t)
+	file := writeTestFile(t, "data")
+	for _, name := range []string{"result#1.txt", "a?b.txt", "50%25.txt", "100%.txt", "sub/y.txt"} {
+		url, err := store.Join(server.URL+"/upload/dir", name)
+		if err != nil {
+			t.Fatal("Unexpected error for Join call:", err)
+		}
+		if _, err := store.Put(context.Background(), url, file); err != nil {
+			t.Fatal("Unexpected error for Put call:", err)
+		}
+		if got := <-received; got != "/upload/dir/"+name {
+			t.Errorf("%q was uploaded as %q", name, got)
+		}
 	}
 }

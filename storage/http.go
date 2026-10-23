@@ -51,11 +51,10 @@ func (b *HTTP) Stat(ctx context.Context, url string) (*Object, error) {
 		return nil, fmt.Errorf("httpStorage: parsing URL: %s", err)
 	}
 
-	req, err := http.NewRequest("HEAD", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("httpStorage: creating HEAD request: %s", err)
 	}
-	req.WithContext(ctx)
 
 	resp, err := b.client.Do(req)
 	if err != nil {
@@ -84,11 +83,10 @@ func (b *HTTP) Get(ctx context.Context, url, path string) (*Object, error) {
 		return nil, fmt.Errorf("httpStorage: parsing URL: %s", err)
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("httpStorage: creating GET request: %s", err)
 	}
-	req.WithContext(ctx)
 
 	resp, err := b.client.Do(req)
 	if err != nil {

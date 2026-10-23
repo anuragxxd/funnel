@@ -283,6 +283,36 @@ func TestHTTPGetFollowsRedirect(t *testing.T) {
 	}
 }
 
+func TestHTTPGetStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// The server cancels the download once the request arrives, then waits
+	// for the client to give up.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	_, err := newTestHTTP(t).Get(ctx, server.URL+"/input.txt", filepath.Join(t.TempDir(), "input.txt"))
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %v, want the request canceled with its context", err)
+	}
+}
+
+func TestHTTPStatStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	_, err := newTestHTTP(t).Stat(ctx, server.URL+"/input.txt")
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("error = %v, want the request canceled with its context", err)
+	}
+}
+
 func TestHTTPJoin(t *testing.T) {
 	tests := []struct {
 		url, path, want string
